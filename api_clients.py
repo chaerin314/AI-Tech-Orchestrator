@@ -13,17 +13,28 @@ import xml.etree.ElementTree as ET
 from typing import Optional
 
 import httpx
+import re
 from dotenv import load_dotenv
 
 from schemas import PaperInfo, ModelInfo, CodeRepoInfo, PapersWithCodeResult
 
 load_dotenv()
 
+# Top 학회/저널 및 GitHub 코드 매칭 정규식 패턴
+TOP_VENUE_REGEX = re.compile(
+    r'\b(Accepted to|Published in|NeurIPS|NIPS|ICLR|CVPR|ACL|ICML|AAAI|IJCAI|EMNLP|KDD|SIGIR|ECCV|ICCV|IEEE|ACM|Nature|Science|TACL|NAACL)\b',
+    re.IGNORECASE,
+)
+GITHUB_CODE_REGEX = re.compile(
+    r'github\.com/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+',
+    re.IGNORECASE,
+)
+
 # ──────────────────────────────────────────────
 # 공통 유틸리티
 # ──────────────────────────────────────────────
 
-DEFAULT_TIMEOUT = 30.0
+DEFAULT_TIMEOUT = 15.0
 MAX_RETRIES = 2
 RETRY_DELAY = 1.0
 
@@ -34,15 +45,16 @@ def _request_with_retry(
     headers: Optional[dict] = None,
     params: Optional[dict] = None,
     retries: int = MAX_RETRIES,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> httpx.Response | None:
     """HTTP 요청 + 재시도 로직"""
     for attempt in range(retries + 1):
         try:
-            with httpx.Client(timeout=DEFAULT_TIMEOUT, follow_redirects=True) as client:
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
                 resp = client.request(method, url, headers=headers, params=params)
                 if resp.status_code == 429:  # Rate Limit
-                    wait = RETRY_DELAY * (2 ** attempt)
-                    print(f"[Rate Limit] {url} — {wait}초 후 재시도 ({attempt+1}/{retries})")
+                    wait = RETRY_DELAY * (1.5 ** attempt)
+                    print(f"[Rate Limit] {url} — {wait:.1f}초 후 재시도 ({attempt+1}/{retries})")
                     time.sleep(wait)
                     continue
                 resp.raise_for_status()
@@ -98,6 +110,14 @@ def search_semantic_scholar(query: str, max_results: int = 30, intent: str = "ge
                 external_ids = item.get("externalIds", {})
                 paper_id = item.get("paperId", external_ids.get("ArXiv", ""))
                 
+                venue_text = item.get("venue", "") or ""
+                is_top_venue = bool(TOP_VENUE_REGEX.search(venue_text))
+                citations = item.get("citationCount", 0) or 0
+
+                importance_score = min(citations, 50)
+                if is_top_venue:
+                    importance_score += 50
+
                 papers.append(PaperInfo(
                     title=item.get("title", ""),
                     authors=authors[:5],
@@ -107,8 +127,11 @@ def search_semantic_scholar(query: str, max_results: int = 30, intent: str = "ge
                     paper_url=item.get("url", ""),
                     pdf_url=pdf_url,
                     categories=[],
-                    citation_count=item.get("citationCount", 0),
-                    venue=item.get("venue", ""),
+                    citation_count=citations,
+                    venue=venue_text,
+                    is_top_venue=is_top_venue,
+                    importance_score=importance_score,
+                    source="Semantic Scholar",
                 ))
                 
             # 인용수 기준으로 내림차순 정렬
@@ -132,6 +155,9 @@ ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
 ARXIV_ML_CATS = "(cat:cs.AI OR cat:cs.LG OR cat:cs.CL OR cat:stat.ML)"
 
 def search_arxiv(query: str, max_results: int = 30, intent: str = "general") -> list[PaperInfo]:
+    # arXiv API Rate Limit 방지를 위한 1초 호출 대기
+    time.sleep(1.0)
+
     quoted = f'"{query}"' if " " in query else query
     search_q = f"all:{quoted} AND {ARXIV_ML_CATS}"
     sort_by = "submittedDate" if intent in ("trend",) else "relevance"
@@ -143,7 +169,7 @@ def search_arxiv(query: str, max_results: int = 30, intent: str = "general") -> 
         "sortBy": sort_by,
         "sortOrder": "descending",
     }
-    resp = _request_with_retry("GET", ARXIV_API_URL, params=params)
+    resp = _request_with_retry("GET", ARXIV_API_URL, params=params, timeout=12.0)
     if resp is None:
         return []
 
@@ -174,6 +200,19 @@ def search_arxiv(query: str, max_results: int = 30, intent: str = "general") -> 
                     paper_url = href
                     paper_id = href.split("/abs/")[-1]
 
+            comment_text = entry.findtext("{http://arxiv.org/schemas/atom}comment", "", ARXIV_NS) or entry.findtext("comment", "", ARXIV_NS) or ""
+            journal_text = entry.findtext("{http://arxiv.org/schemas/atom}journal_ref", "", ARXIV_NS) or entry.findtext("journal_ref", "", ARXIV_NS) or ""
+
+            full_meta = f"{comment_text} {journal_text}"
+            is_top_venue = bool(TOP_VENUE_REGEX.search(full_meta))
+            has_code = bool(GITHUB_CODE_REGEX.search(full_meta))
+
+            importance_score = 0
+            if is_top_venue:
+                importance_score += 50
+            if has_code:
+                importance_score += 30
+
             papers.append(PaperInfo(
                 title=title,
                 authors=authors[:5],
@@ -183,7 +222,12 @@ def search_arxiv(query: str, max_results: int = 30, intent: str = "general") -> 
                 paper_url=paper_url,
                 pdf_url=pdf_url,
                 categories=[],
-                source="arXiv (Fallback)",
+                comment=comment_text[:200],
+                journal_ref=journal_text[:200],
+                is_top_venue=is_top_venue,
+                has_code=has_code,
+                importance_score=importance_score,
+                source="arXiv",
             ))
     except ET.ParseError as e:
         print(f"[arXiv Parse Error] {e}")
@@ -388,6 +432,7 @@ def collect_all(
     queries: list[str],
     max_per_source: int = 30,
     intent: str = "general",
+    use_semantic_scholar: bool = False,
 ) -> dict:
     """모든 API에서 데이터를 수집합니다.
 
@@ -395,6 +440,7 @@ def collect_all(
         queries: 검색 쿼리 목록 (Analyzer Agent가 생성)
         max_per_source: 소스·쿼리 당 최대 결과 수
         intent: 질의 의도 (trend/comparison/implementation/general)
+        use_semantic_scholar: True 시 Semantic Scholar 사용, False 시 arXiv 사용
 
     Returns:
         {papers, models, code_repos, pwc_results} 딕셔너리
@@ -406,12 +452,23 @@ def collect_all(
 
     for q in queries:
         print(f"  📡 검색 중 [{intent}]: '{q}'")
-        all_papers.extend(search_semantic_scholar(q, max_per_source, intent=intent))
+        if use_semantic_scholar:
+            all_papers.extend(search_semantic_scholar(q, max_per_source, intent=intent))
+        else:
+            all_papers.extend(search_arxiv(q, max_per_source, intent=intent))
         all_repos.extend(search_github(q, max_per_source, intent=intent))
         all_models.extend(search_huggingface(q, max_per_source, intent=intent))
         all_pwc.extend(search_papers_with_code(q, max_per_source))
 
-    # 중복 제거 (제목/이름 기준)
+    # PwC 코드 매칭 정보로 has_code 및 importance_score 보강
+    pwc_titles = {pwc.paper_title.lower().strip() for pwc in all_pwc if pwc.repositories}
+    for p in all_papers:
+        if p.title.lower().strip() in pwc_titles:
+            if not p.has_code:
+                p.has_code = True
+                p.importance_score += 30
+
+    # 중복 제거 (제목 기준)
     seen_papers: set[str] = set()
     unique_papers: list[PaperInfo] = []
     for p in all_papers:
@@ -419,6 +476,12 @@ def collect_all(
         if key not in seen_papers:
             seen_papers.add(key)
             unique_papers.append(p)
+
+    # 의도별 정렬: "latest_only" 의도거나 최근순 요구 시 날짜순, 그 외 일반/분석 질의는 중요도 점수 우선 정렬
+    if intent == "latest_only":
+        unique_papers.sort(key=lambda p: p.published, reverse=True)
+    else:
+        unique_papers.sort(key=lambda p: (p.importance_score, p.published), reverse=True)
 
     seen_models: set[str] = set()
     unique_models: list[ModelInfo] = []

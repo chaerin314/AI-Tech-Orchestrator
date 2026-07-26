@@ -88,6 +88,7 @@ with st.sidebar:
         st.subheader("🔧 검색 옵션")
         max_results = st.slider("소스당 최대 결과 수", 5, 30, 30)
         use_internal_db = st.checkbox("내부 Vector DB 포함", value=True)
+        use_semantic_scholar = st.checkbox("Semantic Scholar 사용 (끄면 arXiv 사용)", value=False)
 
         st.divider()
         st.subheader("📡 API 상태")
@@ -207,6 +208,7 @@ if mode == "🔍 AI 기술 탐색":
                 analysis.search_queries or [user_input],
                 max_per_source=max_results,
                 intent=analysis.intent,
+                use_semantic_scholar=use_semantic_scholar,
             )
 
             steps[-1] = (

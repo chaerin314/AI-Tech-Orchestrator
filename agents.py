@@ -79,9 +79,10 @@ keywords (3-7 items):
   - Include related terms: method names, task names, architecture names
 
 search_queries (2-4 items, ENGLISH ONLY):
-  - 1-3 concise keywords per query (e.g. ["Direct Preference Optimization", "DPO", "LLM alignment"])
-  - NEVER use full sentences, filler words, or extra words like "implementation", "recent advances", "open source model", "HuggingFace", "Python"
-  - Keep each query focused on the pure technical term/acronym
+  - 1-3 concise technical keywords per query (e.g. ["Multimodal LLM", "Vision Language Model", "VLM"])
+  - NEVER use platform/hub/org names as queries! (e.g. DO NOT include words like "Hugging Face", "GitHub", "arXiv", "OpenAI", "Paper", "Model")
+  - NEVER use full sentences, filler words, or extra words like "implementation", "recent advances", "Python"
+  - Keep each query focused strictly on the core machine learning topic, technique, or model architecture
   - NEVER use Korean characters in search_queries
 
 intent (choose one):
@@ -98,6 +99,9 @@ time_filter (choose one):
 === Examples ===
 Input: "DPO 알고리즘 트렌드와 바로 테스트 가능한 오픈소스 모델을 알려줘"
 Output: {"keywords":["DPO","Direct Preference Optimization","LLM alignment","RLHF","preference learning"],"search_queries":["Direct Preference Optimization","DPO","LLM alignment"],"intent":"trend","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
+
+Input: "멀티모달 LLM의 최신 논문과 Hugging Face 모델을 비교해줘"
+Output: {"keywords":["Multimodal LLM","Vision Language Model","VLM","cross-modal","multimodal alignment"],"search_queries":["Multimodal LLM","Vision Language Model","cross modal LLM"],"intent":"comparison","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
 
 Input: "RAG 기술의 최신 발전과 구현 코드 추천"
 Output: {"keywords":["RAG","Retrieval Augmented Generation","vector search","dense retrieval","knowledge base"],"search_queries":["Retrieval Augmented Generation","RAG","dense retrieval"],"intent":"implementation","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
@@ -166,7 +170,7 @@ Output ONLY valid JSON (no markdown, no explanation):
 
 Rules:
 - Select indices (0-based) of the most relevant results to the user's query
-- Keep max 5 papers, 5 models, 5 repos
+- Keep max 10 papers, 10 models, 10 repos
 - Order by relevance (most relevant first)
 - Remove duplicates and off-topic results
 - Output ONLY the JSON object. No markdown code fences."""
@@ -179,7 +183,7 @@ def run_judge_agent(
     """수집된 결과를 검증하고 정제합니다."""
 
     papers_text = "\n".join(
-        f"[{i}] {p.title} | {p.published} | {p.paper_url}"
+        f"[{i}] {p.title} | {p.published} | TopVenue:{p.is_top_venue} | Code:{p.has_code} | Score:{p.importance_score} | {p.paper_url}"
         for i, p in enumerate(search_result.papers)
     ) or "none"
 
@@ -221,25 +225,25 @@ Select the most relevant results and output JSON only."""
 
     try:
         parsed = json.loads(cleaned)
-        paper_indices = parsed.get("paper_indices", list(range(min(5, len(search_result.papers)))))
-        model_indices = parsed.get("model_indices", list(range(min(5, len(search_result.models)))))
-        repo_indices  = parsed.get("repo_indices",  list(range(min(5, len(search_result.code_repos)))))
+        paper_indices = parsed.get("paper_indices", list(range(min(10, len(search_result.papers)))))
+        model_indices = parsed.get("model_indices", list(range(min(10, len(search_result.models)))))
+        repo_indices  = parsed.get("repo_indices",  list(range(min(10, len(search_result.code_repos)))))
 
         return JudgedResult(
             papers=[search_result.papers[i] for i in paper_indices if i < len(search_result.papers)],
             models=[search_result.models[i] for i in model_indices if i < len(search_result.models)],
             code_repos=[search_result.code_repos[i] for i in repo_indices if i < len(search_result.code_repos)],
-            pwc_results=search_result.pwc_results[:5],
+            pwc_results=search_result.pwc_results[:10],
             internal_docs=search_result.internal_docs,
             quality_notes=parsed.get("quality_notes", ""),
         )
     except (json.JSONDecodeError, KeyError, IndexError) as e:
         print(f"[Judge] JSON 파싱 실패: {e}\n원본: {raw_output[:200]}")
         return JudgedResult(
-            papers=search_result.papers[:5],
-            models=search_result.models[:5],
-            code_repos=search_result.code_repos[:5],
-            pwc_results=search_result.pwc_results[:5],
+            papers=search_result.papers[:10],
+            models=search_result.models[:10],
+            code_repos=search_result.code_repos[:10],
+            pwc_results=search_result.pwc_results[:10],
             internal_docs=search_result.internal_docs,
             quality_notes="자동 검증 실패 — 수집 결과 원본 유지",
         )
@@ -289,7 +293,7 @@ def run_summary_agent(
     """검증된 결과를 기반으로 통합 리포트를 생성합니다."""
 
     papers_detail = "\n".join(
-        f"- Title: {p.title}\n  Authors: {', '.join(p.authors[:3])}\n  Citations: {p.citation_count}\n  Abstract: {p.abstract[:300]}\n  Date: {p.published}\n  URL: {p.paper_url}"
+        f"- Title: {p.title}\n  Authors: {', '.join(p.authors[:3])}\n  Importance Score: {p.importance_score} (Citations: {p.citation_count})\n  Top Venue: {p.is_top_venue} ({p.journal_ref or p.comment or p.venue or 'N/A'})\n  Code Included: {p.has_code}\n  Abstract: {p.abstract[:300]}\n  Date: {p.published}\n  URL: {p.paper_url}"
         for p in judged_result.papers
     ) or "No papers found."
 

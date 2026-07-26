@@ -26,6 +26,11 @@ class PaperInfo(BaseModel):
     categories: list[str] = Field(default_factory=list, description="카테고리/분야")
     citation_count: int = Field(default=0, description="인용 수")
     venue: str = Field(default="", description="출판 저널/학회")
+    comment: str = Field(default="", description="arXiv comment 메타데이터")
+    journal_ref: str = Field(default="", description="arXiv journal_ref 메타데이터")
+    is_top_venue: bool = Field(default=False, description="Top 학회/저널 채택 여부")
+    has_code: bool = Field(default=False, description="코드 구현체 존재 여부")
+    importance_score: int = Field(default=0, description="논문 중요도 점수")
     source: str = Field(default="Semantic Scholar", description="데이터 출처")
 
     @property

@@ -371,52 +371,35 @@ def search_huggingface(
 # 4. Papers with Code API 클라이언트
 # ──────────────────────────────────────────────
 
-PWC_API_URL = "https://paperswithcode.com/api/v1/search"
+PWC_API_URL = "https://huggingface.co/api/papers"
 
 
 def search_papers_with_code(query: str, max_results: int = 30) -> list[PapersWithCodeResult]:
-    """Papers with Code API로 논문-코드 매핑 정보를 검색합니다."""
-    params = {
-        "q": query,
-        "page": 1,
-        "items_per_page": max_results,
-    }
-    resp = _request_with_retry("GET", PWC_API_URL, params=params)
-    if resp is None:
+    """Papers with Code / HF Papers API로 논문-코드 매핑 정보를 검색합니다."""
+    params = {"q": query}
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+
+    resp = _request_with_retry("GET", PWC_API_URL, headers=headers, params=params, timeout=10.0)
+    if resp is None or resp.status_code != 200:
         return []
 
     results: list[PapersWithCodeResult] = []
     try:
-        # PwC API가 HTML을 반환하는 경우 graceful 처리
-        ct = resp.headers.get("content-type", "")
-        if "json" not in ct:
-            return []
-
         data = resp.json()
-        items = data.get("results", data) if isinstance(data, dict) else data
-        if isinstance(items, list):
-            for item in items[:max_results]:
-                paper = item.get("paper", {}) if isinstance(item.get("paper"), dict) else {}
-                paper_title = paper.get("title", "") or item.get("title", "")
-                paper_url_val = paper.get("url", "") or item.get("url", "")
-                paper_id_val = paper.get("paper_id", "") or paper.get("arxiv_id", "") or item.get("arxiv_id", "")
-
-                repos = []
-                if "repository" in item and item["repository"]:
-                    repo = item["repository"]
-                    repos.append({
-                        "url": repo.get("url", ""),
-                        "stars": repo.get("stars", 0),
-                        "framework": repo.get("framework", ""),
-                    })
+        if isinstance(data, list):
+            for item in data[:max_results]:
+                paper_id = item.get("id", "")
+                paper_title = item.get("title", "")
+                upvotes = item.get("upvotes", 0)
+                paper_url = f"https://huggingface.co/papers/{paper_id}" if paper_id else item.get("projectPage", "")
 
                 results.append(PapersWithCodeResult(
                     paper_title=paper_title,
-                    paper_url=(paper_url_val if paper_url_val.startswith("http")
-                               else f"https://paperswithcode.com{paper_url_val}" if paper_url_val else ""),
-                    paper_id=paper_id_val or "",
-                    num_stars=sum(r.get("stars", 0) for r in repos),
-                    repositories=repos,
+                    paper_url=paper_url,
+                    paper_id=paper_id,
+                    num_stars=upvotes,
+                    repositories=[{"url": paper_url, "stars": upvotes}] if paper_url else [],
+                    source="PapersWithCode/DailyPapers",
                 ))
     except Exception as e:
         print(f"[PapersWithCode Parse Error] {e}")
@@ -497,9 +480,18 @@ def collect_all(
             seen_repos.add(r.full_name)
             unique_repos.append(r)
 
+    # PwC 중복 제거
+    seen_pwc: set[str] = set()
+    unique_pwc: list[PapersWithCodeResult] = []
+    for pwc in all_pwc:
+        if pwc.paper_title not in seen_pwc:
+            seen_pwc.add(pwc.paper_title)
+            unique_pwc.append(pwc)
+
+    # 각 소스별 최종 수집 결과 개수를 max_per_source(최대 30개)로 제한
     return {
-        "papers": unique_papers,
-        "models": unique_models,
-        "code_repos": unique_repos,
-        "pwc_results": all_pwc,
+        "papers": unique_papers[:max_per_source],
+        "models": unique_models[:max_per_source],
+        "code_repos": unique_repos[:max_per_source],
+        "pwc_results": unique_pwc[:max_per_source],
     }

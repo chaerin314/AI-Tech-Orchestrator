@@ -1,0 +1,14 @@
+python-dotenv
+faiss-cpu
+pymupdf
+langchain-community
+langchain-openai
+langchain-core
+langchain-text-splitters
+langchain-huggingface
+langgraph
+streamlit
+httpx
+pydantic
+huggingface_hub
+sentence-transformers

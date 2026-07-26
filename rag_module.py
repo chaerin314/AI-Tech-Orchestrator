@@ -112,10 +112,10 @@ def _convert_to_documents(
         for p in papers:
             content = f"[논문] {p.title}\n저자: {', '.join(p.authors[:3])}\n초록: {p.abstract}\n날짜: {p.published}"
             metadata = {
-                "source": "arXiv",
+                "source": "Semantic Scholar",
                 "type": "paper",
-                "arxiv_id": p.arxiv_id,
-                "url": p.arxiv_url,
+                "paper_id": p.paper_id,
+                "url": p.paper_url,
                 "title": p.title,
             }
             documents.append(Document(page_content=content, metadata=metadata))

@@ -15,16 +15,22 @@ from pydantic import BaseModel, Field
 # ──────────────────────────────────────────────
 
 class PaperInfo(BaseModel):
-    """arXiv / Papers with Code에서 수집한 논문 정보"""
+    """Semantic Scholar / Papers with Code에서 수집한 논문 정보"""
     title: str = Field(description="논문 제목")
     authors: list[str] = Field(default_factory=list, description="저자 목록")
     abstract: str = Field(default="", description="초록 요약")
     published: str = Field(default="", description="출판일 (YYYY-MM-DD)")
-    arxiv_id: str = Field(default="", description="arXiv ID")
-    arxiv_url: str = Field(default="", description="arXiv 논문 링크")
+    paper_id: str = Field(default="", description="논문 고유 ID (Semantic Scholar ID / arXiv ID 등)")
+    paper_url: str = Field(default="", description="논문 링크 (Semantic Scholar 등)")
     pdf_url: str = Field(default="", description="PDF 다운로드 링크")
-    categories: list[str] = Field(default_factory=list, description="arXiv 카테고리")
-    source: str = Field(default="arXiv", description="데이터 출처")
+    categories: list[str] = Field(default_factory=list, description="카테고리/분야")
+    citation_count: int = Field(default=0, description="인용 수")
+    venue: str = Field(default="", description="출판 저널/학회")
+    source: str = Field(default="Semantic Scholar", description="데이터 출처")
+
+    @property
+    def arxiv_url(self) -> str:
+        return self.paper_url
 
 
 class ModelInfo(BaseModel):
@@ -58,9 +64,9 @@ class CodeRepoInfo(BaseModel):
 
 class PapersWithCodeResult(BaseModel):
     """Papers with Code에서 수집한 논문-코드 매핑 정보"""
-    paper_title: str = Field(default="", description="논문 제목")
-    paper_url: str = Field(default="", description="PwC 논문 페이지 URL")
-    arxiv_id: str = Field(default="", description="arXiv ID")
+    paper_title: str = Field(description="논문 제목")
+    paper_url: str = Field(default="", description="Papers with Code 또는 논문 링크")
+    paper_id: str = Field(default="", description="논문 식별 ID")
     num_stars: int = Field(default=0, description="GitHub 스타 수 합계")
     repositories: list[dict] = Field(default_factory=list, description="연결된 GitHub 리포지토리 목록")
     source: str = Field(default="PapersWithCode", description="데이터 출처")

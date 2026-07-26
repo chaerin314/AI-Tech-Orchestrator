@@ -1,6 +1,6 @@
 """
 외부 API 클라이언트 모듈
-arXiv, GitHub, Hugging Face Hub, Papers with Code API를 연동하여
+Semantic Scholar, GitHub, Hugging Face Hub, Papers with Code API를 연동하여
 논문, 모델, 코드 메타데이터를 수집합니다.
 질의 의도(intent)에 따라 각 소스별 검색 전략을 최적화합니다.
 """
@@ -63,33 +63,79 @@ def _request_with_retry(
 
 
 # ──────────────────────────────────────────────
-# 1. arXiv API 클라이언트
+# 1. Semantic Scholar API 클라이언트
 # ──────────────────────────────────────────────
 
-ARXIV_API_URL = "https://export.arxiv.org/api/query"
-ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
-
-# ML/AI 관련 카테고리 필터
-ARXIV_ML_CATS = "(cat:cs.AI OR cat:cs.LG OR cat:cs.CL OR cat:stat.ML)"
+S2_API_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 
 
-def search_arxiv(query: str, max_results: int = 30, intent: str = "general") -> list[PaperInfo]:
-    """arXiv API로 논문을 검색합니다.
+def search_semantic_scholar(query: str, max_results: int = 30, intent: str = "general") -> list[PaperInfo]:
+    """Semantic Scholar API로 인용수가 높은 논문을 검색합니다.
 
     Args:
         query: 검색 쿼리
         max_results: 최대 결과 수
-        intent: 질의 의도 (trend/comparison/implementation/general)
+        intent: 질의 의도
     """
-    # 따옴표로 감싸 정확도 향상
+    params = {
+        "query": query,
+        "limit": min(max_results, 100),
+        "fields": "title,authors,abstract,publicationDate,url,openAccessPdf,citationCount,venue,externalIds",
+    }
+    
+    resp = _request_with_retry("GET", S2_API_URL, params=params)
+    papers: list[PaperInfo] = []
+    
+    if resp is not None:
+        try:
+            data = resp.json()
+            for item in data.get("data", []):
+                authors = [a.get("name", "") for a in item.get("authors", []) if a.get("name")]
+                
+                pdf_url = ""
+                if item.get("openAccessPdf"):
+                    pdf_url = item["openAccessPdf"].get("url", "")
+                external_ids = item.get("externalIds", {})
+                paper_id = item.get("paperId", external_ids.get("ArXiv", ""))
+                
+                papers.append(PaperInfo(
+                    title=item.get("title", ""),
+                    authors=authors[:5],
+                    abstract=(item.get("abstract") or "")[:500],
+                    published=item.get("publicationDate") or "",
+                    paper_id=paper_id,
+                    paper_url=item.get("url", ""),
+                    pdf_url=pdf_url,
+                    categories=[],
+                    citation_count=item.get("citationCount", 0),
+                    venue=item.get("venue", ""),
+                ))
+                
+            # 인용수 기준으로 내림차순 정렬
+            papers.sort(key=lambda x: x.citation_count, reverse=True)
+        except Exception as e:
+            print(f"[SemanticScholar Parse Error] {e}")
+
+    # Semantic Scholar가 0건을 반환하거나 Rate Limit 등으로 실패한 경우 Fallback으로 arXiv 검색 수행
+    if not papers:
+        print(f"⚠️ Semantic Scholar 검색 실패/결과 없음. arXiv Fallback으로 전환합니다. (query: {query})")
+        return search_arxiv(query, max_results, intent)
+
+    return papers
+
+# ──────────────────────────────────────────────
+# 1-1. arXiv API 클라이언트 (Fallback 용)
+# ──────────────────────────────────────────────
+
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
+ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
+ARXIV_ML_CATS = "(cat:cs.AI OR cat:cs.LG OR cat:cs.CL OR cat:stat.ML)"
+
+def search_arxiv(query: str, max_results: int = 30, intent: str = "general") -> list[PaperInfo]:
     quoted = f'"{query}"' if " " in query else query
-
-    # ML 카테고리 필터를 추가해 AI/ML 관련 논문만 수집
     search_q = f"all:{quoted} AND {ARXIV_ML_CATS}"
-
-    # 의도별 정렬 전략
     sort_by = "submittedDate" if intent in ("trend",) else "relevance"
-
+    
     params = {
         "search_query": search_q,
         "start": 0,
@@ -117,33 +163,27 @@ def search_arxiv(query: str, max_results: int = 30, intent: str = "general") -> 
                 if name:
                     authors.append(name)
 
-            # arXiv ID & 링크 추출
-            arxiv_id = ""
-            arxiv_url = ""
+            paper_id = ""
+            paper_url = ""
             pdf_url = ""
             for link in entry.findall("atom:link", ARXIV_NS):
                 href = link.get("href", "")
                 if link.get("title") == "pdf":
                     pdf_url = href
                 elif "abs" in href:
-                    arxiv_url = href
-                    arxiv_id = href.split("/abs/")[-1]
-
-            categories = []
-            for cat in entry.findall("atom:category", ARXIV_NS):
-                term = cat.get("term", "")
-                if term:
-                    categories.append(term)
+                    paper_url = href
+                    paper_id = href.split("/abs/")[-1]
 
             papers.append(PaperInfo(
                 title=title,
                 authors=authors[:5],
                 abstract=abstract[:500],
                 published=published,
-                arxiv_id=arxiv_id,
-                arxiv_url=arxiv_url,
+                paper_id=paper_id,
+                paper_url=paper_url,
                 pdf_url=pdf_url,
-                categories=categories,
+                categories=[],
+                source="arXiv (Fallback)",
             ))
     except ET.ParseError as e:
         print(f"[arXiv Parse Error] {e}")
@@ -232,57 +272,54 @@ def search_huggingface(
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
 
-    params: dict = {
-        "search": query,
-        "sort": "downloads",
-        "direction": "-1",
-        "limit": min(max_results, 100),
-    }
-
-    # 구현 의도일 때 text-generation 모델 위주로 필터
-    pipeline_hint = _INTENT_TO_PIPELINE.get(intent)
-    if pipeline_hint:
-        params["pipeline_tag"] = pipeline_hint
-
-    resp = _request_with_retry("GET", HF_API_URL, headers=headers, params=params)
-    if resp is None:
-        return []
-
-    # likes 순으로도 별도 요청하여 다양성 확보
-    params2 = dict(params)
-    params2["sort"] = "likes"
-    resp2 = _request_with_retry("GET", HF_API_URL, headers=headers, params=params2)
+    def _fetch(q: str, sort_by: str) -> list:
+        params = {
+            "search": q,
+            "sort": sort_by,
+            "direction": "-1",
+            "limit": min(max_results, 100),
+        }
+        resp = _request_with_retry("GET", HF_API_URL, headers=headers, params=params)
+        return resp.json() if (resp and resp.status_code == 200) else []
 
     def _parse_models(data: list, seen: set) -> list[ModelInfo]:
         result = []
         for item in data:
+            if not isinstance(item, dict):
+                continue
             model_id = item.get("modelId", item.get("id", ""))
             if not model_id or model_id in seen:
                 continue
             seen.add(model_id)
             author = model_id.split("/")[0] if "/" in model_id else ""
+            p_tag = item.get("pipeline_tag") or ""
+            tags = item.get("tags", [])[:10]
+            desc = f"Pipeline: {p_tag} | Tags: {', '.join(tags[:4])}"
+            
             result.append(ModelInfo(
                 model_id=model_id,
                 author=author,
-                pipeline_tag=item.get("pipeline_tag") or "",
+                pipeline_tag=p_tag,
                 downloads=item.get("downloads", 0),
                 likes=item.get("likes", 0),
-                tags=item.get("tags", [])[:10],
+                tags=tags,
                 last_modified=(item.get("lastModified") or "")[:10],
                 url=f"https://huggingface.co/{model_id}",
+                description=desc,
             ))
         return result
 
     models: list[ModelInfo] = []
     seen_ids: set[str] = set()
-    try:
-        if resp:
-            models.extend(_parse_models(resp.json(), seen_ids))
-        if resp2:
-            models.extend(_parse_models(resp2.json(), seen_ids))
-    except Exception as e:
-        print(f"[HuggingFace Parse Error] {e}")
 
+    # downloads & likes 순 검색
+    raw_dl = _fetch(query, "downloads")
+    raw_likes = _fetch(query, "likes")
+    models.extend(_parse_models(raw_dl, seen_ids))
+    models.extend(_parse_models(raw_likes, seen_ids))
+
+    # downloads 순 내림차순 정렬
+    models.sort(key=lambda x: x.downloads, reverse=True)
     return models[:max_results]
 
 
@@ -318,7 +355,7 @@ def search_papers_with_code(query: str, max_results: int = 30) -> list[PapersWit
                 paper = item.get("paper", {}) if isinstance(item.get("paper"), dict) else {}
                 paper_title = paper.get("title", "") or item.get("title", "")
                 paper_url_val = paper.get("url", "") or item.get("url", "")
-                arxiv_id_val = paper.get("arxiv_id", "") or item.get("arxiv_id", "")
+                paper_id_val = paper.get("paper_id", "") or paper.get("arxiv_id", "") or item.get("arxiv_id", "")
 
                 repos = []
                 if "repository" in item and item["repository"]:
@@ -333,7 +370,7 @@ def search_papers_with_code(query: str, max_results: int = 30) -> list[PapersWit
                     paper_title=paper_title,
                     paper_url=(paper_url_val if paper_url_val.startswith("http")
                                else f"https://paperswithcode.com{paper_url_val}" if paper_url_val else ""),
-                    arxiv_id=arxiv_id_val or "",
+                    paper_id=paper_id_val or "",
                     num_stars=sum(r.get("stars", 0) for r in repos),
                     repositories=repos,
                 ))
@@ -369,7 +406,7 @@ def collect_all(
 
     for q in queries:
         print(f"  📡 검색 중 [{intent}]: '{q}'")
-        all_papers.extend(search_arxiv(q, max_per_source, intent=intent))
+        all_papers.extend(search_semantic_scholar(q, max_per_source, intent=intent))
         all_repos.extend(search_github(q, max_per_source, intent=intent))
         all_models.extend(search_huggingface(q, max_per_source, intent=intent))
         all_pwc.extend(search_papers_with_code(q, max_per_source))

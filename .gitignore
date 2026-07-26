@@ -2,5 +2,4 @@
 __pycache__/
 *.pyc
 vectorstore_data/
-desktop.ini
 .venv

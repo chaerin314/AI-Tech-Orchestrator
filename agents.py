@@ -79,11 +79,9 @@ keywords (3-7 items):
   - Include related terms: method names, task names, architecture names
 
 search_queries (2-4 items, ENGLISH ONLY):
-  - These queries are sent directly to arXiv, GitHub, HuggingFace, and Papers with Code
-  - Query 1: concise key term for arXiv (e.g. "Direct Preference Optimization LLM")
-  - Query 2: implementation-focused for GitHub (e.g. "DPO fine-tuning implementation")
-  - Query 3: model name or task for HuggingFace (e.g. "DPO preference optimization model")
-  - Make queries specific enough to find RELEVANT results, not too broad
+  - 1-3 concise keywords per query (e.g. ["Direct Preference Optimization", "DPO", "LLM alignment"])
+  - NEVER use full sentences, filler words, or extra words like "implementation", "recent advances", "open source model", "HuggingFace", "Python"
+  - Keep each query focused on the pure technical term/acronym
   - NEVER use Korean characters in search_queries
 
 intent (choose one):
@@ -99,10 +97,10 @@ time_filter (choose one):
 
 === Examples ===
 Input: "DPO 알고리즘 트렌드와 바로 테스트 가능한 오픈소스 모델을 알려줘"
-Output: {"keywords":["DPO","Direct Preference Optimization","LLM alignment","RLHF","preference learning"],"search_queries":["Direct Preference Optimization LLM alignment","DPO fine-tuning open source","DPO language model HuggingFace"],"intent":"trend","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
+Output: {"keywords":["DPO","Direct Preference Optimization","LLM alignment","RLHF","preference learning"],"search_queries":["Direct Preference Optimization","DPO","LLM alignment"],"intent":"trend","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
 
 Input: "RAG 기술의 최신 발전과 구현 코드 추천"
-Output: {"keywords":["RAG","Retrieval Augmented Generation","vector search","dense retrieval","knowledge base"],"search_queries":["Retrieval Augmented Generation recent advances","RAG implementation Python","RAG LLM retrieval model"],"intent":"implementation","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
+Output: {"keywords":["RAG","Retrieval Augmented Generation","vector search","dense retrieval","knowledge base"],"search_queries":["Retrieval Augmented Generation","RAG","dense retrieval"],"intent":"implementation","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
 
 Output ONLY the JSON object."""
 
@@ -181,7 +179,7 @@ def run_judge_agent(
     """수집된 결과를 검증하고 정제합니다."""
 
     papers_text = "\n".join(
-        f"[{i}] {p.title} | {p.published} | {p.arxiv_url}"
+        f"[{i}] {p.title} | {p.published} | {p.paper_url}"
         for i, p in enumerate(search_result.papers)
     ) or "none"
 
@@ -260,7 +258,7 @@ Structure the report with these sections (use Korean):
 3-5 sentences summarizing the latest trends.
 
 ## 2. 📄 주요 논문
-Markdown table: | 제목 | 핵심 기여 | 날짜 | 링크 |
+Markdown table: | 제목 | 인용수 | 핵심 기여 | 날짜 | 링크 |
 
 ## 3. 🤖 추천 오픈소스 모델
 Markdown table: | 모델 | 다운로드 | 특징 | 링크 |
@@ -291,7 +289,7 @@ def run_summary_agent(
     """검증된 결과를 기반으로 통합 리포트를 생성합니다."""
 
     papers_detail = "\n".join(
-        f"- Title: {p.title}\n  Authors: {', '.join(p.authors[:3])}\n  Abstract: {p.abstract[:300]}\n  Date: {p.published}\n  URL: {p.arxiv_url}"
+        f"- Title: {p.title}\n  Authors: {', '.join(p.authors[:3])}\n  Citations: {p.citation_count}\n  Abstract: {p.abstract[:300]}\n  Date: {p.published}\n  URL: {p.paper_url}"
         for p in judged_result.papers
     ) or "No papers found."
 

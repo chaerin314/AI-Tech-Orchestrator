@@ -142,24 +142,32 @@ if mode == "🔍 AI 기술 탐색":
     # ── 이전 대화 표시 ──
     for msg in st.session_state.messages_tech:
         with st.chat_message(msg["role"]):
+            if "metrics" in msg:
+                m = msg["metrics"]
+                scols = st.columns(4)
+                scols[0].metric("📄 논문", f"{m['papers']}건")
+                scols[1].metric("🤖 모델", f"{m['models']}건")
+                scols[2].metric("💻 코드", f"{m['repos']}건")
+                scols[3].metric("🔗 PwC", f"{m['pwc']}건")
+                st.divider()
             st.markdown(msg["content"])
 
     # ── 사용자 입력 수집 ──
     typed_input = st.chat_input("AI 기술에 대해 질문하세요 (예: DPO 트렌드, RAG 구현 코드 등)")
 
-    # pending_query(예시 버튼 클릭)와 직접 입력 중 하나를 user_input으로 확정
-    user_input: str | None = None
+    # 입력 처리 (예시 버튼 또는 텍스트 입력)
     if "pending_query" in st.session_state:
-        user_input = st.session_state.pop("pending_query")
+        st.session_state.messages_tech.append({"role": "user", "content": st.session_state.pop("pending_query")})
+        st.session_state.is_generating = True
+        st.rerun()
     elif typed_input:
-        user_input = typed_input
+        st.session_state.messages_tech.append({"role": "user", "content": typed_input})
+        st.session_state.is_generating = True
+        st.rerun()
 
     # ── 에이전트 실행 ──
-    if user_input:
-        # 1) 사용자 메시지 기록 & 표시
-        st.session_state.messages_tech.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
+    if st.session_state.get("is_generating", False):
+        user_input = st.session_state.messages_tech[-1]["content"]
 
         # 2) 어시스턴트 응답 영역
         with st.chat_message("assistant"):
@@ -191,7 +199,7 @@ if mode == "🔍 AI 기술 탐색":
             _show_steps(steps)
 
             # ── Step 2: 데이터 수집 ──
-            steps.append("🌐 **[Step 2]** 외부 API 데이터 수집 중 (arXiv · GitHub · HuggingFace)…")
+            steps.append("🌐 **[Step 2]** 외부 API 데이터 수집 중 (Semantic Scholar · GitHub · HuggingFace)…")
             _show_steps(steps)
 
             from api_clients import collect_all
@@ -274,11 +282,19 @@ if mode == "🔍 AI 기술 탐색":
             st.divider()
             st.markdown(report.full_report)
 
-        # 3) 어시스턴트 메시지 기록
+        # 3) 어시스턴트 메시지 기록 및 렌더링 종료
         st.session_state.messages_tech.append({
             "role": "assistant",
             "content": report.full_report,
+            "metrics": {
+                "papers": len(judged.papers),
+                "models": len(judged.models),
+                "repos": len(judged.code_repos),
+                "pwc": len(judged.pwc_results),
+            }
         })
+        st.session_state.is_generating = False
+        st.rerun()
 
 
 # ──────────────────────────────────────────────

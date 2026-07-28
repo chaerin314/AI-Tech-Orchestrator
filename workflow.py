@@ -11,7 +11,7 @@ from typing import Any, TypedDict
 from langgraph.graph import StateGraph, END
 
 from schemas import AnalysisResult, SearchResult, JudgedResult, FinalReport
-from agents import run_analyzer_agent, run_judge_agent, run_summary_agent
+from agents import run_analyzer_agent, run_judge_agent, run_summary_agent, run_direct_answer_agent
 from api_clients import collect_all
 from rag_module import build_vectorstore_from_collected_data, search_vectorstore
 
@@ -62,12 +62,35 @@ def route_decision(state: AgentState) -> str:
     if analysis is None:
         return "collect_external"
 
+    # 외부 API와 내부 DB 모두 사용할 필요가 없는 일상질문/기초개념인 경우
+    if not analysis.use_external_apis and not analysis.use_internal_db:
+        return "direct_answer"
+
     if analysis.use_external_apis and analysis.use_internal_db:
         return "collect_both"
     elif analysis.use_external_apis:
         return "collect_external"
     else:
         return "search_internal"
+
+
+def direct_answer_node(state: AgentState) -> dict:
+    """[Direct Answer] 검색 없이 바로 답변을 작성합니다."""
+    log = state.get("status_log", [])
+    log.append("⚡ 검색 생략: 직접 답변을 작성합니다.")
+    
+    report = run_direct_answer_agent(state["user_query"])
+    
+    # RAG 검색 결과를 빈 값으로 맞춤
+    search_result = SearchResult()
+    judged = JudgedResult()
+    
+    return {
+        "search_result": search_result,
+        "judged_result": judged,
+        "final_report": report,
+        "status_log": log
+    }
 
 
 def collect_external_node(state: AgentState) -> dict:
@@ -122,7 +145,7 @@ def collect_both_node(state: AgentState) -> dict:
         internal_docs = search_vectorstore(
             analysis.original_query,
             vectorstore=vectorstore,
-            k=5,
+            k=50,
         )
 
     log.append(
@@ -152,7 +175,7 @@ def search_internal_node(state: AgentState) -> dict:
     internal_docs = search_vectorstore(
         analysis.original_query,
         load_from_disk=True,
-        k=5,
+        k=50,
     )
 
     log.append(f"📚 내부 검색 완료 — {len(internal_docs)}건")
@@ -209,6 +232,7 @@ def build_workflow() -> StateGraph:
     workflow.add_node("collect_external", collect_external_node)
     workflow.add_node("collect_both", collect_both_node)
     workflow.add_node("search_internal", search_internal_node)
+    workflow.add_node("direct_answer", direct_answer_node)
     workflow.add_node("judge", judge_node)
     workflow.add_node("summarize", summarize_node)
 
@@ -223,6 +247,7 @@ def build_workflow() -> StateGraph:
             "collect_external": "collect_external",
             "collect_both": "collect_both",
             "search_internal": "search_internal",
+            "direct_answer": "direct_answer",
         },
     )
 
@@ -230,6 +255,7 @@ def build_workflow() -> StateGraph:
     workflow.add_edge("collect_external", "judge")
     workflow.add_edge("collect_both", "judge")
     workflow.add_edge("search_internal", "judge")
+    workflow.add_edge("direct_answer", END)
     workflow.add_edge("judge", "summarize")
     workflow.add_edge("summarize", END)
 

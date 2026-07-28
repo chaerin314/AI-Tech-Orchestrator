@@ -39,6 +39,9 @@ MAX_RETRIES = 2
 RETRY_DELAY = 1.0
 
 
+API_WARNINGS: list[str] = []
+
+
 def _request_with_retry(
     method: str,
     url: str,
@@ -48,25 +51,41 @@ def _request_with_retry(
     timeout: float = DEFAULT_TIMEOUT,
 ) -> httpx.Response | None:
     """HTTP 요청 + 재시도 로직"""
+    global API_WARNINGS
     for attempt in range(retries + 1):
         try:
             with httpx.Client(timeout=timeout, follow_redirects=True) as client:
                 resp = client.request(method, url, headers=headers, params=params)
                 if resp.status_code == 429:  # Rate Limit
                     wait = RETRY_DELAY * (1.5 ** attempt)
-                    print(f"[Rate Limit] {url} — {wait:.1f}초 후 재시도 ({attempt+1}/{retries})")
+                    msg = f"[Rate Limit] {url} — {wait:.1f}초 후 재시도 ({attempt+1}/{retries})"
+                    print(msg)
+                    domain = url.split("://")[-1].split("/")[0]
+                    warning_msg = f"{domain} API가 요청량 제한(Rate Limit)에 도달하여 재시도를 수행했습니다."
+                    if warning_msg not in API_WARNINGS:
+                        API_WARNINGS.append(warning_msg)
                     time.sleep(wait)
                     continue
                 resp.raise_for_status()
                 return resp
         except httpx.HTTPStatusError as e:
             print(f"[HTTP Error] {url}: {e.response.status_code}")
+            if attempt == retries:
+                domain = url.split("://")[-1].split("/")[0]
+                warning_msg = f"{domain} API 요청 실패 (HTTP {e.response.status_code})"
+                if warning_msg not in API_WARNINGS:
+                    API_WARNINGS.append(warning_msg)
             if attempt < retries:
                 time.sleep(RETRY_DELAY)
                 continue
             return None
         except httpx.RequestError as e:
             print(f"[Request Error] {url}: {e}")
+            if attempt == retries:
+                domain = url.split("://")[-1].split("/")[0]
+                warning_msg = f"{domain} API 연결 타임아웃 또는 네트워크 네트워크 에러"
+                if warning_msg not in API_WARNINGS:
+                    API_WARNINGS.append(warning_msg)
             if attempt < retries:
                 time.sleep(RETRY_DELAY)
                 continue
@@ -155,8 +174,8 @@ ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
 ARXIV_ML_CATS = "(cat:cs.AI OR cat:cs.LG OR cat:cs.CL OR cat:stat.ML)"
 
 def search_arxiv(query: str, max_results: int = 30, intent: str = "general") -> list[PaperInfo]:
-    # arXiv API Rate Limit 방지를 위한 1초 호출 대기
-    time.sleep(1.0)
+    # arXiv API Rate Limit 방지를 위한 3초 호출 대기
+    time.sleep(3.0)
 
     quoted = f'"{query}"' if " " in query else query
     search_q = f"all:{quoted} AND {ARXIV_ML_CATS}"
@@ -169,7 +188,8 @@ def search_arxiv(query: str, max_results: int = 30, intent: str = "general") -> 
         "sortBy": sort_by,
         "sortOrder": "descending",
     }
-    resp = _request_with_retry("GET", ARXIV_API_URL, params=params, timeout=12.0)
+    headers = {"User-Agent": "mailto:your_email@example.com"}
+    resp = _request_with_retry("GET", ARXIV_API_URL, headers=headers, params=params, timeout=12.0)
     if resp is None:
         return []
 
@@ -417,17 +437,9 @@ def collect_all(
     intent: str = "general",
     use_semantic_scholar: bool = False,
 ) -> dict:
-    """모든 API에서 데이터를 수집합니다.
+    global API_WARNINGS
+    API_WARNINGS = []
 
-    Args:
-        queries: 검색 쿼리 목록 (Analyzer Agent가 생성)
-        max_per_source: 소스·쿼리 당 최대 결과 수
-        intent: 질의 의도 (trend/comparison/implementation/general)
-        use_semantic_scholar: True 시 Semantic Scholar 사용, False 시 arXiv 사용
-
-    Returns:
-        {papers, models, code_repos, pwc_results} 딕셔너리
-    """
     all_papers: list[PaperInfo] = []
     all_models: list[ModelInfo] = []
     all_repos: list[CodeRepoInfo] = []
@@ -494,4 +506,5 @@ def collect_all(
         "models": unique_models[:max_per_source],
         "code_repos": unique_repos[:max_per_source],
         "pwc_results": unique_pwc[:max_per_source],
+        "warnings": list(API_WARNINGS),
     }

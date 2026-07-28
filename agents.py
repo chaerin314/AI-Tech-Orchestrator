@@ -79,11 +79,12 @@ keywords (3-7 items):
   - Include related terms: method names, task names, architecture names
 
 search_queries (2-4 items, ENGLISH ONLY):
-  - 1-3 concise technical keywords per query (e.g. ["Multimodal LLM", "Vision Language Model", "VLM"])
-  - NEVER use platform/hub/org names as queries! (e.g. DO NOT include words like "Hugging Face", "GitHub", "arXiv", "OpenAI", "Paper", "Model")
+  - 1-3 concise technical keywords per query (e.g. ["VLM", "Reward Modeling", "Multimodal LLM", "Vision Language Model"])
+  - NEVER use platform/hub/org names as queries! (e.g. DO NOT include words like "Hugging Face", "GitHub", "arXiv", "OpenAI", "Paper", "Model", "implementation code")
   - NEVER use full sentences, filler words, or extra words like "implementation", "recent advances", "Python"
   - Keep each query focused strictly on the core machine learning topic, technique, or model architecture
   - NEVER use Korean characters in search_queries
+  - If the question is a simple greeting or a generic concept explanation that does NOT need paper/code search, leave this list EMPTY.
 
 intent (choose one):
   - "trend": user wants latest developments, trends, recent advances
@@ -96,6 +97,10 @@ time_filter (choose one):
   - "last_year": specific year mentioned
   - "all": general historical overview
 
+Routing Rules (use_internal_db and use_external_apis):
+  - If the question is a simple greeting (e.g. "안녕", "반가워"), a generic question, or a request for a basic explanation of a well-known concept (e.g. "RAG가 뭐야?", "머신러닝의 정의가 뭐야?") that does NOT require searching database or API, set BOTH "use_internal_db" and "use_external_apis" to FALSE.
+  - Otherwise, set at least one of them to TRUE.
+
 === Examples ===
 Input: "DPO 알고리즘 트렌드와 바로 테스트 가능한 오픈소스 모델을 알려줘"
 Output: {"keywords":["DPO","Direct Preference Optimization","LLM alignment","RLHF","preference learning"],"search_queries":["Direct Preference Optimization","DPO","LLM alignment"],"intent":"trend","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
@@ -103,8 +108,11 @@ Output: {"keywords":["DPO","Direct Preference Optimization","LLM alignment","RLH
 Input: "멀티모달 LLM의 최신 논문과 Hugging Face 모델을 비교해줘"
 Output: {"keywords":["Multimodal LLM","Vision Language Model","VLM","cross-modal","multimodal alignment"],"search_queries":["Multimodal LLM","Vision Language Model","cross modal LLM"],"intent":"comparison","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
 
-Input: "RAG 기술의 최신 발전과 구현 코드 추천"
-Output: {"keywords":["RAG","Retrieval Augmented Generation","vector search","dense retrieval","knowledge base"],"search_queries":["Retrieval Augmented Generation","RAG","dense retrieval"],"intent":"implementation","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
+Input: "RAG가 뭔지 그냥 간단하게 상식 수준으로 설명해줘"
+Output: {"keywords":["RAG","Retrieval Augmented Generation"],"search_queries":[],"intent":"general","time_filter":"all","use_internal_db":false,"use_external_apis":false}
+
+Input: "안녕하세요! 만나서 반갑습니다."
+Output: {"keywords":[],"search_queries":[],"intent":"general","time_filter":"all","use_internal_db":false,"use_external_apis":false}
 
 Output ONLY the JSON object."""
 
@@ -253,36 +261,40 @@ Select the most relevant results and output JSON only."""
 # 3. Summary Agent
 # ──────────────────────────────────────────────
 
-SUMMARY_SYSTEM_PROMPT = """You are a technical report writer for an AI technology search agent.
-Write a comprehensive Korean report based on the provided papers, models, and code repositories.
+SUMMARY_SYSTEM_PROMPT = """You are an expert AI Senior Researcher and Technical Report Writer.
+Your task: Write an in-depth, highly analytical Korean technical research report based on the provided paper abstracts, models, and code repositories.
 
-Structure the report with these sections (use Korean):
+Structure the report with these sections (in Korean):
 
-## 1. 🔬 핵심 기술 트렌드 요약
-3-5 sentences summarizing the latest trends.
+## 1. 🔬 기술 동향 및 핵심 방법론 깊이 있는 분석
+- Write a detailed, comprehensive multi-paragraph technical analysis (at least 3-4 detailed subsections).
+- Deeply explain the technical mechanisms, algorithmic approaches, theoretical contributions, and paradigm shifts presented in the paper abstracts.
+- **CRITICAL INLINE HYPERLINK CITATION RULE**: Whenever explaining a specific method, model, or paper in the text, insert an inline hyperlink citation directly!
+  Example: "최근 연구인 [[Locating and Editing Memories in GPT](https://arxiv.org/abs/...)]에서는..."
+- Do NOT just list titles; explain HOW the methods work, what problems they solve, and their advantages/disadvantages.
 
-## 2. 📄 주요 논문
-Markdown table: | 제목 | 인용수 | 핵심 기여 | 날짜 | 링크 |
+## 2. 📊 검증된 논문-코드 매칭 현황
+- ONLY output matches that are explicitly confirmed by PwC data in the context.
+- If no explicit match exists between a paper and repository, state "단순 매칭 정보 없음 (독립 자원)" — DO NOT invent fake relationships!
 
-## 3. 🤖 추천 오픈소스 모델
-Markdown table: | 모델 | 다운로드 | 특징 | 링크 |
+## 3. 📄 주요 논문 및 오프소스 자원 요약
+Provide clean, concise markdown summary tables at the end:
+### 주요 논문 요약 (Top 학회 & 코드 링크 포함)
+| 제목 | Top 학회 | 코드(O/X) | 핵심 기여 | 날짜 |
+(Link directly to titles and code 'O')
 
-## 4. 💻 추천 GitHub 리포지토리
-Markdown table: | 리포지토리 | ⭐ Stars | 설명 | 링크 |
+### 추천 오픈소스 모델 및 GitHub 코드
+| 구분 | 명칭 | 특징 및 요약 |
+(Link directly to names)
 
-## 5. 📊 논문-모델-코드 매칭표
-Connect papers to related models/repos when possible.
-
-## 6. ⚠️ 한계점 및 추가 확인 사항
-Note limitations and what needs further investigation.
+## 4. ⚠️ 한계점 및 향후 전망
+Summarize key technical challenges and future research directions.
 
 Rules:
-- Write in Korean
-- Include ALL source links
-- Use markdown tables extensively
-- Include reasoning for recommendations (star count, downloads, recency)
-- Do NOT include information without a source link
-- Do NOT add content not present in the provided data"""
+- Write in professional, fluent Korean.
+- Prioritize deep technical analysis and explanations over simple table dumps.
+- ALWAYS use inline markdown hyperlink citations `[논문제목](URL)` inside Section 1 analysis text.
+- Do NOT include information without a source link or invent fake relationships."""
 
 
 def run_summary_agent(
@@ -324,6 +336,9 @@ Keywords: {', '.join(analysis.keywords)}
 === Verified Code Repos ===
 {repos_detail}
 
+=== Verified Papers with Code (PwC) Matches ===
+{pwc_detail}
+
 === Internal Search Results ===
 {internal_detail}
 
@@ -334,3 +349,14 @@ Write a comprehensive Korean technical report based on the above data."""
 
     report_text = _chat(system=SUMMARY_SYSTEM_PROMPT, user=user_msg, max_tokens=3000)
     return FinalReport(full_report=report_text)
+
+
+def run_direct_answer_agent(user_query: str) -> FinalReport:
+    """외부 API/DB 검색이 불필요할 때, LLM이 즉시 직접 답변을 작성하여 반환합니다."""
+    system = "You are a helpful AI assistant. Answer the user's question directly, clearly, and concisely in Korean."
+    response = _chat(system=system, user=user_query, max_tokens=2048)
+    return FinalReport(
+        trend_summary="직접 답변 (검색 생략)",
+        comparison_table="",
+        full_report=response
+    )

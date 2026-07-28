@@ -199,90 +199,115 @@ if mode == "🔍 AI 기술 탐색":
             )
             _show_steps(steps)
 
-            # ── Step 2: 데이터 수집 ──
-            steps.append("🌐 **[Step 2]** 외부 API 데이터 수집 중 (Semantic Scholar · GitHub · HuggingFace)…")
-            _show_steps(steps)
-
-            from api_clients import collect_all
-            collected = collect_all(
-                analysis.search_queries or [user_input],
-                max_per_source=max_results,
-                intent=analysis.intent,
-                use_semantic_scholar=use_semantic_scholar,
-            )
-
-            steps[-1] = (
-                f"✅ **[Step 2]** 수집 완료  \n"
-                f"  - 논문: {len(collected['papers'])}건 | "
-                f"모델: {len(collected['models'])}건 | "
-                f"코드: {len(collected['code_repos'])}건 | "
-                f"PwC: {len(collected['pwc_results'])}건"
-            )
-            _show_steps(steps)
-
-            # ── Step 2.5: Vector DB 저장 & 내부 검색 ──
-            from schemas import SearchResult
-            from rag_module import build_vectorstore_from_collected_data, search_vectorstore
-
-            internal_docs: list[str] = []
-            if use_internal_db and (collected["papers"] or collected["models"] or collected["code_repos"]):
-                steps.append("📚 **[Step 2.5]** Vector DB 저장 & 내부 검색 중…")
+            # ── Step 2: 데이터 수집 혹은 직접 답변 결정 ──
+            if not analysis.use_external_apis and not analysis.use_internal_db:
+                steps.append("⚡ **[Step 2]** 검색 생략: 직접 답변을 작성합니다 (Direct Answer)…")
                 _show_steps(steps)
 
-                vectorstore = build_vectorstore_from_collected_data(
+                from agents import run_direct_answer_agent
+                report = run_direct_answer_agent(user_input)
+
+                # 진행 단계 지우고 최종 답변 표시
+                progress_ph.empty()
+                st.markdown(report.full_report)
+
+                # 빈 통계 결과를 위한 빈 JudgedResult 설정
+                from schemas import JudgedResult
+                judged = JudgedResult()
+            else:
+                # ── Step 2: 데이터 수집 ──
+                steps.append("🌐 **[Step 2]** 외부 API 데이터 수집 중 (arXiv · GitHub · HuggingFace)…")
+                _show_steps(steps)
+
+                from api_clients import collect_all
+                collected = collect_all(
+                    analysis.search_queries or [user_input],
+                    max_per_source=max_results,
+                    intent=analysis.intent,
+                    use_semantic_scholar=use_semantic_scholar,
+                )
+
+                steps[-1] = (
+                    f"✅ **[Step 2]** 수집 완료  \n"
+                    f"  - 논문: {len(collected['papers'])}건 | "
+                    f"모델: {len(collected['models'])}건 | "
+                    f"코드: {len(collected['code_repos'])}건 | "
+                    f"PwC: {len(collected['pwc_results'])}건"
+                )
+                _show_steps(steps)
+
+                # ── Step 2.5: Vector DB 저장 & 내부 검색 ──
+                from schemas import SearchResult
+                from rag_module import build_vectorstore_from_collected_data, search_vectorstore
+
+                internal_docs: list[str] = []
+                if use_internal_db and (collected["papers"] or collected["models"] or collected["code_repos"]):
+                    steps.append("📚 **[Step 3]** Vector DB 저장 및 검색 중…")
+                    _show_steps(steps)
+
+                    vectorstore = build_vectorstore_from_collected_data(
+                        papers=collected["papers"],
+                        models=collected["models"],
+                        code_repos=collected["code_repos"],
+                        persist=True,
+                    )
+                    if vectorstore:
+                        internal_docs = search_vectorstore(user_input, vectorstore=vectorstore, k=50)
+
+                    steps[-1] = f"✅ **[Step 3]** Vector DB 검색 완료"
+                    _show_steps(steps)
+
+                search_result = SearchResult(
                     papers=collected["papers"],
                     models=collected["models"],
                     code_repos=collected["code_repos"],
-                    persist=True,
+                    pwc_results=collected["pwc_results"],
+                    internal_docs=internal_docs,
                 )
-                if vectorstore:
-                    internal_docs = search_vectorstore(user_input, vectorstore=vectorstore, k=5)
 
-                steps[-1] = f"✅ **[Step 2.5]** 내부 검색 완료 — {len(internal_docs)}건"
+                # ── Step 3: Judge ──
+                steps.append("⚖️ **[Step 4]** 검색 결과 검증 중 (Judge Agent)…")
                 _show_steps(steps)
 
-            search_result = SearchResult(
-                papers=collected["papers"],
-                models=collected["models"],
-                code_repos=collected["code_repos"],
-                pwc_results=collected["pwc_results"],
-                internal_docs=internal_docs,
-            )
+                from agents import run_judge_agent
+                judged = run_judge_agent(user_input, search_result)
 
-            # ── Step 3: Judge ──
-            steps.append("⚖️ **[Step 3]** 결과 검증 중 (Judge Agent)…")
-            _show_steps(steps)
+                steps[-1] = (
+                    f"✅ **[Step 4]** 검색 결과 검증 완료  \n"
+                    f"  - 논문 {len(judged.papers)}건 | "
+                    f"모델 {len(judged.models)}건 | "
+                    f"코드 {len(judged.code_repos)}건"
+                )
+                _show_steps(steps)
 
-            from agents import run_judge_agent
-            judged = run_judge_agent(user_input, search_result)
+                # ── Step 4: Summary ──
+                steps.append("📝 **[Step 5]** 리포트 생성 중 (Summary Agent)…")
+                _show_steps(steps)
 
-            steps[-1] = (
-                f"✅ **[Step 3]** 검증 완료  \n"
-                f"  - 논문 {len(judged.papers)}건 | "
-                f"모델 {len(judged.models)}건 | "
-                f"코드 {len(judged.code_repos)}건"
-            )
-            _show_steps(steps)
+                from agents import run_summary_agent
+                report = run_summary_agent(user_input, judged, analysis)
 
-            # ── Step 4: Summary ──
-            steps.append("📝 **[Step 4]** 리포트 생성 중 (Summary Agent)…")
-            _show_steps(steps)
+                # 진행 단계 지우고 최종 리포트 표시
+                progress_ph.empty()
 
-            from agents import run_summary_agent
-            report = run_summary_agent(user_input, judged, analysis)
+                # API 오류/지연 경고가 있는 경우 표시 및 리포트 본문에 추가
+                if collected.get("warnings"):
+                    st.warning(
+                        "⚠️ **일부 API 요청 중 지연 또는 제한(Rate Limit/Timeout)이 발생하였습니다:**\n" +
+                        "\n".join(f"- {w}" for w in collected["warnings"])
+                    )
+                    warning_suffix = "\n\n---\n\n⚠️ **API 수집 경고:**\n" + "\n".join(f"- {w}" for w in collected["warnings"])
+                    report.full_report += warning_suffix
 
-            # 진행 단계 지우고 최종 리포트 표시
-            progress_ph.empty()
+                # 통계 카드
+                stat_cols = st.columns(4)
+                stat_cols[0].metric("📄 논문", f"{len(judged.papers)}건")
+                stat_cols[1].metric("🤖 모델", f"{len(judged.models)}건")
+                stat_cols[2].metric("💻 코드", f"{len(judged.code_repos)}건")
+                stat_cols[3].metric("🔗 PwC", f"{len(judged.pwc_results)}건")
 
-            # 통계 카드
-            stat_cols = st.columns(4)
-            stat_cols[0].metric("📄 논문", f"{len(judged.papers)}건")
-            stat_cols[1].metric("🤖 모델", f"{len(judged.models)}건")
-            stat_cols[2].metric("💻 코드", f"{len(judged.code_repos)}건")
-            stat_cols[3].metric("🔗 PwC", f"{len(judged.pwc_results)}건")
-
-            st.divider()
-            st.markdown(report.full_report)
+                st.divider()
+                st.markdown(report.full_report)
 
         # 3) 어시스턴트 메시지 기록 및 렌더링 종료
         st.session_state.messages_tech.append({

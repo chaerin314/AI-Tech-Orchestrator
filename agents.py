@@ -261,46 +261,48 @@ Select the most relevant results and output JSON only."""
 # 3. Summary Agent
 # ──────────────────────────────────────────────
 
-SUMMARY_SYSTEM_PROMPT = """You are an expert AI Senior Researcher and Technical Report Writer.
+def get_summary_system_prompt(use_semantic_scholar: bool) -> str:
+    if use_semantic_scholar:
+        paper_table_format = "### 📄 분석에 사용된 논문\n| 제목 | 인용수 | 핵심 기여 | 날짜 |\n(Link directly to titles)"
+    else:
+        paper_table_format = "### 📄 분석에 사용된 논문\n| 제목 | Top 학회 | 코드(O/X) | 핵심 기여 | 날짜 |\n(Link directly to titles and code 'O')"
+
+    return f"""You are an expert AI Senior Researcher and Technical Report Writer.
 Your task: Write an in-depth, highly analytical Korean technical research report based on the provided paper abstracts, models, and code repositories.
 
 Structure the report with these sections (in Korean):
 
-## 1. 🔬 기술 동향 및 핵심 방법론 깊이 있는 분석
-- Write a detailed, comprehensive multi-paragraph technical analysis (at least 3-4 detailed subsections).
+## 1. 🔬 기술 동향 및 핵심 방법론 분석
+- Write a detailed, comprehensive multi-paragraph technical analysis. DO NOT use numbered lists like 1.1, 1.2 for individual papers.
+- Synthesize multiple papers together in a cohesive narrative (e.g., "최신 연구에서는 ~~한 추세가 나타난다. 예를 들어 [논문1](URL), [논문2](URL)에서는 ~~로 밝혀졌다.").
 - Deeply explain the technical mechanisms, algorithmic approaches, theoretical contributions, and paradigm shifts presented in the paper abstracts.
 - **CRITICAL INLINE HYPERLINK CITATION RULE**: Whenever explaining a specific method, model, or paper in the text, insert an inline hyperlink citation directly!
   Example: "최근 연구인 [[Locating and Editing Memories in GPT](https://arxiv.org/abs/...)]에서는..."
 - Do NOT just list titles; explain HOW the methods work, what problems they solve, and their advantages/disadvantages.
+- Lastly, summarize key technical challenges and future research directions.
 
-## 2. 📊 검증된 논문-코드 매칭 현황
-- ONLY output matches that are explicitly confirmed by PwC data in the context.
-- If no explicit match exists between a paper and repository, state "단순 매칭 정보 없음 (독립 자원)" — DO NOT invent fake relationships!
+## 2. 📚 활용한 자료
+Provide clean, concise markdown summary tables of the resources used in your analysis:
 
-## 3. 📄 주요 논문 및 오프소스 자원 요약
-Provide clean, concise markdown summary tables at the end:
-### 주요 논문 요약 (Top 학회 & 코드 링크 포함)
-| 제목 | Top 학회 | 코드(O/X) | 핵심 기여 | 날짜 |
-(Link directly to titles and code 'O')
+{paper_table_format}
 
-### 추천 오픈소스 모델 및 GitHub 코드
-| 구분 | 명칭 | 특징 및 요약 |
+### 🤖 분석에 사용된 모델 및 코드
+| 구분(모델/코드) | 명칭 | 특징 및 요약 |
 (Link directly to names)
-
-## 4. ⚠️ 한계점 및 향후 전망
-Summarize key technical challenges and future research directions.
 
 Rules:
 - Write in professional, fluent Korean.
-- Prioritize deep technical analysis and explanations over simple table dumps.
+- Prioritize deep technical synthesis and explanations over simple table dumps.
 - ALWAYS use inline markdown hyperlink citations `[논문제목](URL)` inside Section 1 analysis text.
-- Do NOT include information without a source link or invent fake relationships."""
+- Do NOT include information without a source link or invent fake relationships.
+- The report MUST contain exactly two main sections: `## 1. 🔬 기술 동향 및 핵심 방법론 분석` (with `### 한계점 및 향후 전망` inside) and `## 2. 📚 활용한 자료`."""
 
 
 def run_summary_agent(
     user_query: str,
     judged_result: JudgedResult,
     analysis: AnalysisResult,
+    use_semantic_scholar: bool = False,
 ) -> FinalReport:
     """검증된 결과를 기반으로 통합 리포트를 생성합니다."""
 
@@ -318,6 +320,11 @@ def run_summary_agent(
         f"- Repo: {r.full_name}\n  Stars: {r.stars:,}\n  Language: {r.language}\n  Description: {r.description[:200]}\n  URL: {r.url}"
         for r in judged_result.code_repos
     ) or "No repositories found."
+
+    pwc_detail = "\n".join(
+        f"- Paper: {pwc.paper_title} <-> Link: {pwc.paper_url} (Upvotes: {pwc.num_stars})"
+        for pwc in judged_result.pwc_results
+    ) or "No explicit PwC matches."
 
     internal_detail = "\n".join(
         f"- {doc[:200]}" for doc in judged_result.internal_docs
@@ -347,7 +354,8 @@ Keywords: {', '.join(analysis.keywords)}
 
 Write a comprehensive Korean technical report based on the above data."""
 
-    report_text = _chat(system=SUMMARY_SYSTEM_PROMPT, user=user_msg, max_tokens=3000)
+    system_prompt = get_summary_system_prompt(use_semantic_scholar)
+    report_text = _chat(system=system_prompt, user=user_msg, max_tokens=3000)
     return FinalReport(full_report=report_text)
 
 

@@ -285,7 +285,7 @@ if mode == "🔍 AI 기술 탐색":
                 _show_steps(steps)
 
                 from agents import run_summary_agent
-                report = run_summary_agent(user_input, judged, analysis)
+                report = run_summary_agent(user_input, judged, analysis, use_semantic_scholar=use_semantic_scholar)
 
                 # 진행 단계 지우고 최종 리포트 표시
                 progress_ph.empty()

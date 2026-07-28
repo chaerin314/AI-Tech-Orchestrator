@@ -472,8 +472,10 @@ def collect_all(
             seen_papers.add(key)
             unique_papers.append(p)
 
-    # 의도별 정렬: "latest_only" 의도거나 최근순 요구 시 날짜순, 그 외 일반/분석 질의는 중요도 점수 우선 정렬
-    if intent == "latest_only":
+    # 정렬: Semantic Scholar 사용 시 인용수 우선, "latest_only" 의도시 날짜순, 그 외 중요도 점수 우선
+    if use_semantic_scholar:
+        unique_papers.sort(key=lambda p: (p.citation_count, p.published), reverse=True)
+    elif intent == "latest_only":
         unique_papers.sort(key=lambda p: p.published, reverse=True)
     else:
         unique_papers.sort(key=lambda p: (p.importance_score, p.published), reverse=True)

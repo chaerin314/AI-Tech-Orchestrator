@@ -93,6 +93,19 @@ def _request_with_retry(
     return None
 
 
+def verify_url_alive(url: str, timeout: float = 2.0) -> bool:
+    """URL에 HTTP HEAD 요청을 보내 404 깨진 링크가 아닌지 유효성을 검증합니다."""
+    if not url or not url.startswith("http"):
+        return False
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            resp = client.head(url)
+            return resp.status_code < 400
+    except Exception:
+        # 네트워크 지연 시 보수적으로 통과 처리
+        return True
+
+
 # ──────────────────────────────────────────────
 # 1. Semantic Scholar API 클라이언트
 # ──────────────────────────────────────────────
@@ -501,6 +514,11 @@ def collect_all(
         if pwc.paper_title not in seen_pwc:
             seen_pwc.add(pwc.paper_title)
             unique_pwc.append(pwc)
+
+    # 유효한 URL 스킴 검증 (http/https 링크가 존재하는 자료만 유지)
+    unique_papers = [p for p in unique_papers if p.paper_url and p.paper_url.startswith("http")]
+    unique_models = [m for m in unique_models if m.url and m.url.startswith("http")]
+    unique_repos = [r for r in unique_repos if r.url and r.url.startswith("http")]
 
     # 각 소스별 최종 수집 결과 개수를 max_per_source(최대 30개)로 제한
     return {

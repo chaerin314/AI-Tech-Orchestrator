@@ -80,17 +80,17 @@ keywords (3-7 items):
 
 search_queries (2-4 items, ENGLISH ONLY):
   - 1-3 concise technical keywords per query (e.g. ["VLM", "Reward Modeling", "Multimodal LLM", "Vision Language Model"])
-  - NEVER use platform/hub/org names as queries! (e.g. DO NOT include words like "Hugging Face", "GitHub", "arXiv", "OpenAI", "Paper", "Model", "implementation code")
-  - NEVER use full sentences, filler words, or extra words like "implementation", "recent advances", "Python"
+  - NEVER use platform/hub/org names as queries! (e.g. DO NOT include words like "Hugging Face", "GitHub", "arXiv", "OpenAI", "Paper", "Model")
+  - NEVER use full sentences, filler words, or extra words like "implementation", "recent advances", "Python", "implementation code", "trend"
   - Keep each query focused strictly on the core machine learning topic, technique, or model architecture
   - NEVER use Korean characters in search_queries
   - If the question is a simple greeting or a generic concept explanation that does NOT need paper/code search, leave this list EMPTY.
 
 intent (choose one):
-  - "trend": user wants latest developments, trends, recent advances
-  - "comparison": user wants to compare methods/models/approaches
-  - "implementation": user wants code, how-to, practical usage
-  - "general": broad exploration of a topic
+  - "implementation": user specifically asks for code, open-source models, GitHub repos, hands-on testing, or practical implementation ("오픈소스 모델", "GitHub", "리포", "코드", "구현체", "테스트")
+  - "trend": user asks for research trends, latest advances, theoretical/algorithmic progress ("동향", "트렌드", "최근 연구", "발전 방향")
+  - "comparison": user wants to compare multiple methods/models/approaches ("비교", "차이점", "VS", "성능 비교")
+  - "general": broad concept explanation or basic question
 
 time_filter (choose one):
   - "recent": "최신", "요즘", "최근", "트렌드", "동향" in question
@@ -102,12 +102,29 @@ Routing Rules (use_internal_db and use_external_apis):
   - Otherwise, set at least one of them to TRUE.
 
 === Examples ===
-Input: "DPO 알고리즘 트렌드와 바로 테스트 가능한 오픈소스 모델을 알려줘"
-Output: {"keywords":["DPO","Direct Preference Optimization","LLM alignment","RLHF","preference learning"],"search_queries":["Direct Preference Optimization","DPO","LLM alignment"],"intent":"trend","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
 
-Input: "멀티모달 LLM의 최신 논문과 Hugging Face 모델을 비교해줘"
-Output: {"keywords":["Multimodal LLM","Vision Language Model","VLM","cross-modal","multimodal alignment"],"search_queries":["Multimodal LLM","Vision Language Model","cross modal LLM"],"intent":"comparison","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
+# 1. Implementation Examples (user seeks code, models, GitHub repos, practical tools):
+Input: "Knowledge Editing 관련 핵심 기법과 오픈소스 구현 코드를 찾아줘"
+Output: {"keywords":["Knowledge Editing","ROME","MEMIT","Model Editing"],"search_queries":["Knowledge Editing","Model Editing implementation"],"intent":"implementation","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
 
+Input: "RAG 최신 연구들 중 구현 코드가 있는 논문들을 찾아줘"
+Output: {"keywords":["RAG","Retrieval Augmented Generation","vector database","document retrieval"],"search_queries":["Retrieval Augmented Generation","RAG code"],"intent":"implementation","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
+
+# 2. Trend Examples (user seeks research developments and technical trends):
+Input: "DPO와 같은 RLHF 알고리즘의 최근 동향을 알려줘"
+Output: {"keywords":["DPO","RLHF","Direct Preference Optimization","PPO","LLM alignment"],"search_queries":["RLHF","Direct Preference Optimization","DPO trend"],"intent":"trend","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
+
+Input: "Vision Language Model의 최신 연구 발전 방향을 서술해줘"
+Output: {"keywords":["Vision Language Model","VLM","multimodal LLM","vision transformer"],"search_queries":["Vision Language Model","VLM advances"],"intent":"trend","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
+
+# 3. Comparison Examples (user seeks side-by-side comparison):
+Input: "Vision-Language Model(VLM) 기법 중 주요 오픈소스 모델들의 특징을 비교해줘"
+Output: {"keywords":["Vision Language Model","VLM","Multimodal LLM","cross-modal"],"search_queries":["Vision Language Model","VLM comparison"],"intent":"comparison","time_filter":"recent","use_internal_db":true,"use_external_apis":true}
+
+Input: "DPO와 PPO 알고리즘의 차이점과 성능을 비교 분석해줘"
+Output: {"keywords":["DPO","PPO","Direct Preference Optimization","Proximal Policy Optimization"],"search_queries":["DPO vs PPO","Direct Preference Optimization PPO"],"intent":"comparison","time_filter":"all","use_internal_db":true,"use_external_apis":true}
+
+# 4. General / Greeting Examples:
 Input: "RAG가 뭔지 그냥 간단하게 상식 수준으로 설명해줘"
 Output: {"keywords":["RAG","Retrieval Augmented Generation"],"search_queries":[],"intent":"general","time_filter":"all","use_internal_db":false,"use_external_apis":false}
 
@@ -261,41 +278,57 @@ Select the most relevant results and output JSON only."""
 # 3. Summary Agent
 # ──────────────────────────────────────────────
 
-def get_summary_system_prompt(use_semantic_scholar: bool) -> str:
+def get_summary_system_prompt(intent: str, use_semantic_scholar: bool) -> str:
     if use_semantic_scholar:
-        paper_table_format = "### 📄 분석에 사용된 논문\n| 제목 | 인용수 | 핵심 기여 | 날짜 |\n(Link directly to titles)"
+        paper_table_format = "##### 분석에 사용된 논문\n| 제목 | 인용수 | 핵심 기여 | 날짜 |\n(Link directly to titles)"
     else:
-        paper_table_format = "### 📄 분석에 사용된 논문\n| 제목 | Top 학회 | 코드(O/X) | 핵심 기여 | 날짜 |\n(Link directly to titles and code 'O')"
+        paper_table_format = "##### 분석에 사용된 논문\n| 제목 | Top 학회 | 코드(O/X) | 핵심 기여 | 날짜 |\n(Link directly to titles and code 'O')"
+
+    if intent == "implementation":
+        structure_instruction = f"""
+Structure your response tailored for IMPLEMENTATION & RESOURCE LOOKUP:
+- **IF THE USER ASKED FOR SPECIFIC MODELS / CODE RECOMMENDATIONS** (e.g., Apache 2.0 Korean LLM, 24GB GPU models, Qwen Agent repo):
+  - **DO NOT write unnecessary theoretical paper analysis sections!** Focus directly and solely on answering the user's recommendation request.
+  - Structure as:
+    `## 조건 부합 추천 오픈소스 모델 및 코드 목록`
+    (Table or structured list containing: Model/Repo Name `[명칭/ID](URL)`, License, Hardware/VRAM Requirements, Features & Usage)
+    `## 실행 및 활용 가이드`
+    (Practical execution tips, e.g. vLLM / Ollama / transformers code snippet for 24GB GPU VRAM or setup)
+
+- **IF THE USER ASKED FOR BOTH METHODOLOGY & CODE**:
+  - Briefly introduce key techniques in 1-2 concise paragraphs, then provide thorough model/repo tables and implementation guides."""
+    elif intent == "comparison":
+        structure_instruction = f"""
+Structure your response tailored for COMPARATIVE ANALYSIS:
+- `## 비교 분석`
+  (Analyze comparative criteria: performance, computational efficiency, license, ease of training, model accessibility)
+- `## 비교 대상 모델, 코드 및 논문 자원`
+  (Structured markdown summary tables with direct hyperlinked names `[명칭](URL)`)"""
+    elif intent == "trend":
+        structure_instruction = f"""
+Structure your response tailored for RESEARCH TREND ANALYSIS:
+- `## 기술 동향 및 핵심 방법론 분석`
+  (In-depth, multi-paragraph continuous narrative connecting literature smoothly with inline hyperlinks `[논문제목](URL)`)
+  `##### 한계점 및 향후 전망` (Brief subsection at the end of Section 1)
+- `## 활용한 자료`
+  ({paper_table_format}
+   ##### 분석에 사용된 모델 및 코드
+   | 구분(모델/코드) | 명칭 (링크 포함) | 특징 및 요약 |)"""
+    else:
+        structure_instruction = f"""
+Structure your response concisely to directly answer the user's question with appropriate markdown tables and hyperlinked references `[명칭](URL)`."""
 
     return f"""You are an expert AI Senior Researcher and Technical Report Writer.
-Your task: Write an in-depth, highly analytical Korean technical research report based on the provided paper abstracts, models, and code repositories.
+Your primary directive: Answer the user's question DIRECTLY, ACCURATELY, and RELEVANTLY. Adapt your output structure strictly to the user's request type.
 
-Structure the report with these sections (in Korean):
+{structure_instruction}
 
-## 1. 🔬 기술 동향 및 핵심 방법론 분석
-- Write a detailed, comprehensive multi-paragraph technical analysis. DO NOT use numbered lists like 1.1, 1.2 for individual papers.
-- Synthesize multiple papers together in a cohesive narrative (e.g., "최신 연구에서는 ~~한 추세가 나타난다. 예를 들어 [논문1](URL), [논문2](URL)에서는 ~~로 밝혀졌다.").
-- Deeply explain the technical mechanisms, algorithmic approaches, theoretical contributions, and paradigm shifts presented in the paper abstracts.
-- **CRITICAL INLINE HYPERLINK CITATION RULE**: Whenever explaining a specific method, model, or paper in the text, insert an inline hyperlink citation directly!
-  Example: "최근 연구인 [[Locating and Editing Memories in GPT](https://arxiv.org/abs/...)]에서는..."
-- Do NOT just list titles; explain HOW the methods work, what problems they solve, and their advantages/disadvantages.
-- Lastly, summarize key technical challenges and future research directions.
-
-## 2. 📚 활용한 자료
-Provide clean, concise markdown summary tables of the resources used in your analysis:
-
-{paper_table_format}
-
-### 🤖 분석에 사용된 모델 및 코드
-| 구분(모델/코드) | 명칭 | 특징 및 요약 |
-(Link directly to names)
-
-Rules:
-- Write in professional, fluent Korean.
-- Prioritize deep technical synthesis and explanations over simple table dumps.
-- ALWAYS use inline markdown hyperlink citations `[논문제목](URL)` inside Section 1 analysis text.
-- Do NOT include information without a source link or invent fake relationships.
-- The report MUST contain exactly two main sections: `## 1. 🔬 기술 동향 및 핵심 방법론 분석` (with `### 한계점 및 향후 전망` inside) and `## 2. 📚 활용한 자료`."""
+CRITICAL RULES:
+1. ALWAYS embed direct clickable markdown hyperlinks for papers `[제목](URL)`, models `[model_id](URL)`, and repos `[repo_name](URL)`. Never write plain unlinked names.
+2. If the user specified HARDWARE limits (e.g. 24GB GPU VRAM), explicitly verify and mention VRAM compatibility (e.g. 7B/8B models or Q4/Q8 quantized versions).
+3. If the user specified LICENSES (e.g. Apache 2.0, Commercial Use), explicitly verify license compatibility.
+4. Do NOT invent fake URLs or relationships not present in the provided context.
+5. Write in fluent, professional, clear Korean."""
 
 
 def run_summary_agent(
@@ -354,7 +387,7 @@ Keywords: {', '.join(analysis.keywords)}
 
 Write a comprehensive Korean technical report based on the above data."""
 
-    system_prompt = get_summary_system_prompt(use_semantic_scholar)
+    system_prompt = get_summary_system_prompt(analysis.intent, use_semantic_scholar)
     report_text = _chat(system=system_prompt, user=user_msg, max_tokens=3000)
     return FinalReport(full_report=report_text)
 

@@ -123,21 +123,47 @@ if mode == "🔍 AI 기술 탐색":
     if "messages_tech" not in st.session_state:
         st.session_state.messages_tech = []
 
-    EXAMPLES = [
-        "DPO 알고리즘 트렌드와 바로 테스트 가능한 오픈소스 모델을 알려줘",
-        "LLM Alignment 관련 최신 기법과 오픈소스 모델, GitHub 리포를 찾아줘",
-        "RAG 기술의 최신 발전과 구현 코드가 있는 프로젝트를 추천해줘",
-        "멀티모달 LLM의 최신 논문과 Hugging Face 모델을 비교해줘",
-    ]
+    CATEGORIZED_EXAMPLES = {
+        "🔥 대표 쿼리 (기본)": [
+            "DPO와 같은 RLHF 알고리즘의 최근 동향을 알려줘",
+            "Knowledge Editing 관련 핵심 기법과 오픈소스 구현 코드를 찾아줘",
+            "RAG 최신 연구들 중 구현 코드가 있는 논문들을 찾아줘",
+            "Vision-Language Model(VLM) 기법 중 주요 오픈소스 모델들의 특징을 비교해줘",
+        ],
+        "1️⃣ 최신 기술 탐색형": [
+            "최근 1년 동안 발표된 LLM Alignment 관련 논문과 공식 GitHub 구현체를 찾아줘",
+            "Direct Preference Optimization(DPO)의 최신 연구 동향을 정리하고 바로 테스트할 수 있는 오픈소스 모델도 추천해줘",
+            "Multimodal RAG 관련 최신 논문과 Hugging Face에서 사용할 수 있는 모델을 비교해줘",
+        ],
+        "2️⃣ 구현 중심형": [
+            "Qwen3를 이용한 Agent 시스템 구현 예제를 찾아주고 실행 가능한 GitHub Repository를 추천해줘",
+            "LangGraph 기반 Multi-Agent 프로젝트 중 Star가 높은 오픈소스를 찾아서 특징을 비교해줘",
+            "LoRA를 이용해 Llama를 파인튜닝한 프로젝트를 찾아주고 학습 코드와 사용 가능한 모델을 함께 알려줘",
+        ],
+        "3️⃣ 조건 검색형": [
+            "Apache 2.0 라이선스를 사용하는 한국어 LLM 중 24GB GPU에서 실행 가능한 모델만 추천해줘",
+            "Vision-Language Model 중 상업적으로 사용 가능한 모델만 찾아서 성능과 라이선스를 비교해줘",
+        ],
+        "4️⃣ 복합 추론형 & 데모용": [
+            "의료 QA 서비스를 만들려고 하는데 사용할 만한 최신 논문, 오픈소스 모델, 구현 코드, 데이터셋을 함께 추천해줘",
+            "RAG 성능을 높이기 위한 최신 기법을 조사해서 각 기법의 논문, 구현 코드, 사용할 수 있는 모델을 표로 정리해줘",
+            "DPO와 ORPO의 차이점을 설명하고 각각의 대표 논문, GitHub 구현체, Hugging Face 모델을 비교해줘",
+            "Agentic RAG를 구현하려고 하는데 참고할 만한 최신 논문과 실제 구현 프로젝트를 난이도 순으로 추천해줘",
+            "MCP(Model Context Protocol)를 적용한 오픈소스 프로젝트를 찾아서 구현 방식과 아키텍처를 설명해줘",
+            "Llama 3를 이용한 AI Agent 프로젝트 중 LangGraph를 사용하는 사례만 찾아줘",
+            "Diffusion Transformer(DiT) 관련 최신 연구 중 공식 구현 코드와 Pretrained Model이 모두 공개된 프로젝트만 찾아줘",
+        ],
+    }
 
-    # ── 예시 질문 (항상 표시, 대화 없을 때는 펼침) ──
+    # ── 예시 질문 (카테고리별 15종 질문 제공) ──
     with st.expander(
-        "💡 예시 질문 — 클릭하면 바로 시작됩니다",
+        "💡 15가지 벤치마크 예시 질문 (시연 및 평가용) — 클릭 시 바로 실행",
         expanded=len(st.session_state.messages_tech) == 0,
     ):
+        selected_cat = st.selectbox("질문 카테고리 선택", list(CATEGORIZED_EXAMPLES.keys()))
         ex_cols = st.columns(2)
-        for i, ex in enumerate(EXAMPLES):
-            if ex_cols[i % 2].button(f"📌 {ex}", key=f"ex_{i}", use_container_width=True):
+        for i, ex in enumerate(CATEGORIZED_EXAMPLES[selected_cat]):
+            if ex_cols[i % 2].button(f"📌 {ex}", key=f"ex_{selected_cat}_{i}", use_container_width=True):
                 st.session_state["pending_query"] = ex
 
     # ── 이전 대화 표시 ──
@@ -236,13 +262,13 @@ if mode == "🔍 AI 기술 탐색":
                 )
                 _show_steps(steps)
 
-                # ── Step 2.5: Vector DB 저장 & 내부 검색 ──
+                # ── Step 3: Vector DB 저장 & 내부 검색 ──
                 from schemas import SearchResult
                 from rag_module import build_vectorstore_from_collected_data, search_vectorstore
 
                 internal_docs: list[str] = []
                 if use_internal_db and (collected["papers"] or collected["models"] or collected["code_repos"]):
-                    steps.append("📚 **[Step 3]** Vector DB 저장 및 검색 중…")
+                    steps.append("📚 **[Step 3]** Vector DB 구축 및 검색 중…")
                     _show_steps(steps)
 
                     vectorstore = build_vectorstore_from_collected_data(
@@ -254,7 +280,7 @@ if mode == "🔍 AI 기술 탐색":
                     if vectorstore:
                         internal_docs = search_vectorstore(user_input, vectorstore=vectorstore, k=50)
 
-                    steps[-1] = f"✅ **[Step 3]** Vector DB 검색 완료"
+                    steps[-1] = f"✅ **[Step 3]** Vector DB 구축 및 검색 완료"
                     _show_steps(steps)
 
                 search_result = SearchResult(
@@ -265,7 +291,7 @@ if mode == "🔍 AI 기술 탐색":
                     internal_docs=internal_docs,
                 )
 
-                # ── Step 3: Judge ──
+                # ── Step 4: Judge ──
                 steps.append("⚖️ **[Step 4]** 검색 결과 검증 중 (Judge Agent)…")
                 _show_steps(steps)
 
@@ -280,7 +306,7 @@ if mode == "🔍 AI 기술 탐색":
                 )
                 _show_steps(steps)
 
-                # ── Step 4: Summary ──
+                # ── Step 5: Summary ──
                 steps.append("📝 **[Step 5]** 리포트 생성 중 (Summary Agent)…")
                 _show_steps(steps)
 

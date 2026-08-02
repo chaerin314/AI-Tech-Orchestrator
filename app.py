@@ -5,6 +5,8 @@ PDF QA 모드와 AI 기술 탐색 모드를 지원하는 통합 인터페이스�
 
 import streamlit as st
 import os
+import hashlib
+import tempfile
 from rag_module import create_rag_chain
 
 
@@ -210,140 +212,125 @@ if mode == "🔍 AI 기술 탐색":
 
             steps: list[str] = []
 
-            # ── Step 1: 질의 분석 ──
+            # ── LangGraph 실행 & 실시간 스트리밍 ──
+            from workflow import build_workflow, AgentState
+
+            workflow_app = build_workflow().compile()
+
+            initial_state: AgentState = {
+                "user_query": user_input,
+                "max_results": max_results,
+                "use_internal_db": use_internal_db,
+                "use_semantic_scholar": use_semantic_scholar,
+                "analysis": None,
+                "search_result": None,
+                "judged_result": None,
+                "final_report": None,
+                "warnings": [],
+                "status_log": [],
+            }
+
+            steps: list[str] = []
             steps.append("🔍 **[Step 1]** 질의 분석 중 (Analyzer Agent)…")
             _show_steps(steps)
 
-            from agents import run_analyzer_agent
-            analysis = run_analyzer_agent(user_input)
+            accumulated_state: dict = dict(initial_state)
 
-            steps[-1] = (
-                f"✅ **[Step 1]** 질의 분석 완료  \n"
-                f"  - 키워드: `{', '.join(analysis.keywords)}`  \n"
-                f"  - 의도: `{analysis.intent}` | 시간 필터: `{analysis.time_filter}`  \n"
-                f"  - 검색 쿼리: `{', '.join(analysis.search_queries)}`"
-            )
-            _show_steps(steps)
+            for event in workflow_app.stream(initial_state):
+                for node_name, node_output in event.items():
+                    accumulated_state.update(node_output)
 
-            # ── Step 2: 데이터 수집 혹은 직접 답변 결정 ──
-            if not analysis.use_external_apis and not analysis.use_internal_db:
-                steps.append("⚡ **[Step 2]** 검색 생략: 직접 답변을 작성합니다 (Direct Answer)…")
-                _show_steps(steps)
+                    if node_name == "analyze":
+                        analysis = node_output.get("analysis")
+                        if analysis:
+                            steps[-1] = (
+                                f"✅ **[Step 1]** 질의 분석 완료  \n"
+                                f"  - 키워드: `{', '.join(analysis.keywords)}`  \n"
+                                f"  - 의도: `{analysis.intent}` | 시간 필터: `{analysis.time_filter}`  \n"
+                                f"  - 검색 쿼리: `{', '.join(analysis.search_queries)}`"
+                            )
+                            _show_steps(steps)
 
-                from agents import run_direct_answer_agent
-                report = run_direct_answer_agent(user_input)
+                    elif node_name == "direct_answer":
+                        steps.append("⚡ **[Step 2]** 검색 생략: 직접 답변 작성 완료 (Direct Answer)")
+                        _show_steps(steps)
 
-                # 진행 단계 지우고 최종 답변 표시
-                progress_ph.empty()
-                st.markdown(report.full_report)
+                    elif node_name in ("collect_external", "collect_both"):
+                        sr = node_output.get("search_result")
+                        if sr:
+                            steps.append(
+                                f"✅ **[Step 2]** 수집 및 Vector DB 검색 완료  \n"
+                                f"  - 논문: {len(sr.papers)}건 | "
+                                f"모델: {len(sr.models)}건 | "
+                                f"코드: {len(sr.code_repos)}건 | "
+                                f"PwC: {len(sr.pwc_results)}건"
+                                + (f" | 내부 검색: {len(sr.internal_docs)}건" if sr.internal_docs else "")
+                            )
+                            _show_steps(steps)
 
-                # 빈 통계 결과를 위한 빈 JudgedResult 설정
-                from schemas import JudgedResult
-                judged = JudgedResult()
-            else:
-                # ── Step 2: 데이터 수집 ──
-                steps.append("🌐 **[Step 2]** 외부 API 데이터 수집 중 (arXiv · GitHub · HuggingFace)…")
-                _show_steps(steps)
+                    elif node_name == "search_internal":
+                        sr = node_output.get("search_result")
+                        if sr:
+                            steps.append(
+                                f"✅ **[Step 2]** 내부 Vector DB 검색 완료  \n"
+                                f"  - 검색 문서: {len(sr.internal_docs)}건"
+                            )
+                            _show_steps(steps)
 
-                from api_clients import collect_all
-                collected = collect_all(
-                    analysis.search_queries or [user_input],
-                    max_per_source=max_results,
-                    intent=analysis.intent,
-                    use_semantic_scholar=use_semantic_scholar,
+                    elif node_name == "judge":
+                        judged = node_output.get("judged_result")
+                        if judged:
+                            steps.append(
+                                f"✅ **[Step 3]** 검색 결과 검증 완료 (Judge Agent)  \n"
+                                f"  - 논문 {len(judged.papers)}건 | "
+                                f"모델 {len(judged.models)}건 | "
+                                f"코드 {len(judged.code_repos)}건"
+                            )
+                            _show_steps(steps)
+
+                    elif node_name == "summarize":
+                        steps.append("📝 **[Step 4]** 최종 리포트 생성 완료 (Summary Agent)")
+                        _show_steps(steps)
+
+            progress_ph.empty()
+
+            final_report = accumulated_state.get("final_report")
+            report_text = final_report.full_report if final_report else "리포트를 생성할 수 없습니다."
+            warnings = accumulated_state.get("warnings", [])
+
+            if warnings:
+                st.warning(
+                    "⚠️ **일부 API 요청 중 지연 또는 제한(Rate Limit/Timeout)이 발생하였습니다:**\n" +
+                    "\n".join(f"- {w}" for w in warnings)
                 )
+                warning_suffix = "\n\n---\n\n⚠️ **API 수집 경고:**\n" + "\n".join(f"- {w}" for w in warnings)
+                report_text += warning_suffix
 
-                steps[-1] = (
-                    f"✅ **[Step 2]** 수집 완료  \n"
-                    f"  - 논문: {len(collected['papers'])}건 | "
-                    f"모델: {len(collected['models'])}건 | "
-                    f"코드: {len(collected['code_repos'])}건 | "
-                    f"PwC: {len(collected['pwc_results'])}건"
-                )
-                _show_steps(steps)
+            judged = accumulated_state.get("judged_result")
+            p_count = len(judged.papers) if judged else 0
+            m_count = len(judged.models) if judged else 0
+            r_count = len(judged.code_repos) if judged else 0
+            pwc_count = len(judged.pwc_results) if judged else 0
 
-                # ── Step 3: Vector DB 저장 & 내부 검색 ──
-                from schemas import SearchResult
-                from rag_module import build_vectorstore_from_collected_data, search_vectorstore
+            # 통계 카드
+            stat_cols = st.columns(4)
+            stat_cols[0].metric("📄 논문", f"{p_count}건")
+            stat_cols[1].metric("🤖 모델", f"{m_count}건")
+            stat_cols[2].metric("💻 코드", f"{r_count}건")
+            stat_cols[3].metric("🔗 PwC", f"{pwc_count}건")
 
-                internal_docs: list[str] = []
-                if use_internal_db and (collected["papers"] or collected["models"] or collected["code_repos"]):
-                    steps.append("📚 **[Step 3]** Vector DB 구축 및 검색 중…")
-                    _show_steps(steps)
-
-                    vectorstore = build_vectorstore_from_collected_data(
-                        papers=collected["papers"],
-                        models=collected["models"],
-                        code_repos=collected["code_repos"],
-                        persist=True,
-                    )
-                    if vectorstore:
-                        internal_docs = search_vectorstore(user_input, vectorstore=vectorstore, k=50)
-
-                    steps[-1] = f"✅ **[Step 3]** Vector DB 구축 및 검색 완료"
-                    _show_steps(steps)
-
-                search_result = SearchResult(
-                    papers=collected["papers"],
-                    models=collected["models"],
-                    code_repos=collected["code_repos"],
-                    pwc_results=collected["pwc_results"],
-                    internal_docs=internal_docs,
-                )
-
-                # ── Step 4: Judge ──
-                steps.append("⚖️ **[Step 4]** 검색 결과 검증 중 (Judge Agent)…")
-                _show_steps(steps)
-
-                from agents import run_judge_agent
-                judged = run_judge_agent(user_input, search_result)
-
-                steps[-1] = (
-                    f"✅ **[Step 4]** 검색 결과 검증 완료  \n"
-                    f"  - 논문 {len(judged.papers)}건 | "
-                    f"모델 {len(judged.models)}건 | "
-                    f"코드 {len(judged.code_repos)}건"
-                )
-                _show_steps(steps)
-
-                # ── Step 5: Summary ──
-                steps.append("📝 **[Step 5]** 리포트 생성 중 (Summary Agent)…")
-                _show_steps(steps)
-
-                from agents import run_summary_agent
-                report = run_summary_agent(user_input, judged, analysis, use_semantic_scholar=use_semantic_scholar)
-
-                # 진행 단계 지우고 최종 리포트 표시
-                progress_ph.empty()
-
-                # API 오류/지연 경고가 있는 경우 표시 및 리포트 본문에 추가
-                if collected.get("warnings"):
-                    st.warning(
-                        "⚠️ **일부 API 요청 중 지연 또는 제한(Rate Limit/Timeout)이 발생하였습니다:**\n" +
-                        "\n".join(f"- {w}" for w in collected["warnings"])
-                    )
-                    warning_suffix = "\n\n---\n\n⚠️ **API 수집 경고:**\n" + "\n".join(f"- {w}" for w in collected["warnings"])
-                    report.full_report += warning_suffix
-
-                # 통계 카드
-                stat_cols = st.columns(4)
-                stat_cols[0].metric("📄 논문", f"{len(judged.papers)}건")
-                stat_cols[1].metric("🤖 모델", f"{len(judged.models)}건")
-                stat_cols[2].metric("💻 코드", f"{len(judged.code_repos)}건")
-                stat_cols[3].metric("🔗 PwC", f"{len(judged.pwc_results)}건")
-
-                st.divider()
-                st.markdown(report.full_report)
+            st.divider()
+            st.markdown(report_text)
 
         # 3) 어시스턴트 메시지 기록 및 렌더링 종료
         st.session_state.messages_tech.append({
             "role": "assistant",
-            "content": report.full_report,
+            "content": report_text,
             "metrics": {
-                "papers": len(judged.papers),
-                "models": len(judged.models),
-                "repos": len(judged.code_repos),
-                "pwc": len(judged.pwc_results),
+                "papers": p_count,
+                "models": m_count,
+                "repos": r_count,
+                "pwc": pwc_count,
             }
         })
         st.session_state.is_generating = False
@@ -362,16 +349,26 @@ elif mode == "📄 PDF QA":
         st.session_state.messages_pdf = []
 
     if uploaded_file:
-        # 파일을 로컬에 임시 저장
-        temp_path = f"temp_{uploaded_file.name}"
-        with open(temp_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
+        file_bytes = uploaded_file.getbuffer()
+        file_hash = hashlib.md5(file_bytes).hexdigest()
+        file_key = f"{uploaded_file.name}_{file_hash}"
 
-        # 세션 상태를 사용하여 체인을 한 번만 생성 (성능 최적화)
-        if "rag_chain" not in st.session_state or st.session_state.get("current_pdf") != uploaded_file.name:
+        # 세션 상태를 사용하여 체인을 한 번만 생성 (해시 기반으로 내용 변경 감지)
+        if "rag_chain" not in st.session_state or st.session_state.get("current_pdf_key") != file_key:
             with st.spinner("📊 문서를 분석 중입니다..."):
-                st.session_state.rag_chain = create_rag_chain(temp_path)
-                st.session_state.current_pdf = uploaded_file.name
+                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_file:
+                    tmp_file.write(file_bytes)
+                    temp_path = tmp_file.name
+
+                try:
+                    st.session_state.rag_chain = create_rag_chain(temp_path)
+                    st.session_state.current_pdf_key = file_key
+                    st.session_state.current_pdf = uploaded_file.name
+                    st.session_state.messages_pdf = []  # 새 문서 업로드 시 대화 기록 초기화
+                finally:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+
             st.success(f"✅ '{uploaded_file.name}' 분석 완료!")
 
         # 기존 대화 표시

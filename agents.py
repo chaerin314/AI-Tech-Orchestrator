@@ -10,7 +10,7 @@ import json
 import os
 
 from dotenv import load_dotenv
-from huggingface_hub import InferenceClient
+from llm_client import qwen_chat
 
 from schemas import (
     AnalysisResult,
@@ -22,36 +22,27 @@ from schemas import (
 load_dotenv()
 
 # ──────────────────────────────────────────────
-# LLM 클라이언트 초기화 (Qwen3-8B via HF Inference API)
+# 공용 헬퍼 함수
 # ──────────────────────────────────────────────
 
-HF_MODEL = "Qwen/Qwen3-8B"
-_client: InferenceClient | None = None
-
-
-def _get_client() -> InferenceClient:
-    global _client
-    if _client is None:
-        token = os.getenv("HF_TOKEN")
-        _client = InferenceClient(model=HF_MODEL, token=token)
-    return _client
-
-
 def _chat(system: str, user: str, max_tokens: int = 2048) -> str:
-    """Qwen3-8B에 system+user 메시지를 전달하고 응답 텍스트를 반환합니다.
-    /no_think 플래그로 thinking 모드를 비활성화하여 content에 바로 응답을 받습니다.
-    """
-    client = _get_client()
-    resp = client.chat_completion(
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user + "\n/no_think"},
-        ],
-        max_tokens=max_tokens,
-    )
-    content = resp.choices[0].message.content or ""
-    # 앞뒤 공백/줄바꿈 정리
-    return content.strip()
+    """공용 LLM 클라이언트(qwen_chat)를 호출합니다."""
+    return qwen_chat(system=system, user=user, max_tokens=max_tokens)
+
+
+def _clean_json_text(raw_output: str) -> str:
+    """LLM 출력 문자열에서 마크다운 코드 블록(```json)을 제거하고 순수 JSON 문자열만 추출합니다."""
+    cleaned = raw_output.strip()
+    if "```" in cleaned:
+        parts = cleaned.split("```")
+        for part in parts:
+            part = part.strip()
+            if part.startswith("json"):
+                part = part[4:].strip()
+            if part.startswith("{"):
+                cleaned = part
+                break
+    return cleaned
 
 
 # ──────────────────────────────────────────────
@@ -142,17 +133,7 @@ def run_analyzer_agent(user_query: str) -> AnalysisResult:
         max_tokens=512,
     )
 
-    # JSON 코드 블록 제거 시도
-    cleaned = raw_output.strip()
-    if "```" in cleaned:
-        parts = cleaned.split("```")
-        for part in parts:
-            part = part.strip()
-            if part.startswith("json"):
-                part = part[4:].strip()
-            if part.startswith("{"):
-                cleaned = part
-                break
+    cleaned = _clean_json_text(raw_output)
 
     try:
         parsed = json.loads(cleaned)
@@ -237,16 +218,7 @@ Select the most relevant results and output JSON only."""
 
     raw_output = _chat(system=JUDGE_SYSTEM_PROMPT, user=user_msg, max_tokens=512)
 
-    cleaned = raw_output.strip()
-    if "```" in cleaned:
-        parts = cleaned.split("```")
-        for part in parts:
-            part = part.strip()
-            if part.startswith("json"):
-                part = part[4:].strip()
-            if part.startswith("{"):
-                cleaned = part
-                break
+    cleaned = _clean_json_text(raw_output)
 
     try:
         parsed = json.loads(cleaned)

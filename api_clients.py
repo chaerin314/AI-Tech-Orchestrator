@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import os
 import time
+import threading
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import httpx
@@ -186,9 +188,24 @@ ARXIV_API_URL = "https://export.arxiv.org/api/query"
 ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
 ARXIV_ML_CATS = "(cat:cs.AI OR cat:cs.LG OR cat:cs.CL OR cat:stat.ML)"
 
+_ARXIV_LOCK = threading.Lock()
+_LAST_ARXIV_CALL_TIME = 0.0
+
+
+def _wait_for_arxiv_rate_limit(min_interval: float = 3.0):
+    """arXiv API Rate Limit 방지를 위한 스레드 세이프 호출 간격 제어 헬퍼"""
+    global _LAST_ARXIV_CALL_TIME
+    with _ARXIV_LOCK:
+        now = time.time()
+        elapsed = now - _LAST_ARXIV_CALL_TIME
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        _LAST_ARXIV_CALL_TIME = time.time()
+
+
 def search_arxiv(query: str, max_results: int = 30, intent: str = "general") -> list[PaperInfo]:
-    # arXiv API Rate Limit 방지를 위한 3초 호출 대기
-    time.sleep(3.0)
+    # arXiv API Rate Limit 방지를 위한 스레드 세이프 대기
+    _wait_for_arxiv_rate_limit(3.0)
 
     quoted = f'"{query}"' if " " in query else query
     search_q = f"all:{quoted} AND {ARXIV_ML_CATS}"
@@ -458,15 +475,34 @@ def collect_all(
     all_repos: list[CodeRepoInfo] = []
     all_pwc: list[PapersWithCodeResult] = []
 
-    for q in queries:
-        print(f"  📡 검색 중 [{intent}]: '{q}'")
-        if use_semantic_scholar:
-            all_papers.extend(search_semantic_scholar(q, max_per_source, intent=intent))
-        else:
-            all_papers.extend(search_arxiv(q, max_per_source, intent=intent))
-        all_repos.extend(search_github(q, max_per_source, intent=intent))
-        all_models.extend(search_huggingface(q, max_per_source, intent=intent))
-        all_pwc.extend(search_papers_with_code(q, max_per_source))
+    tasks = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        for q in queries:
+            print(f"  📡 병렬 검색 시작 [{intent}]: '{q}'")
+            if use_semantic_scholar:
+                tasks.append(executor.submit(search_semantic_scholar, q, max_per_source, intent))
+            else:
+                tasks.append(executor.submit(search_arxiv, q, max_per_source, intent))
+            tasks.append(executor.submit(search_github, q, max_per_source, intent))
+            tasks.append(executor.submit(search_huggingface, q, max_per_source, intent))
+            tasks.append(executor.submit(search_papers_with_code, q, max_per_source))
+
+        for future in as_completed(tasks):
+            try:
+                res = future.result()
+                if not res:
+                    continue
+                first_item = res[0]
+                if isinstance(first_item, PaperInfo):
+                    all_papers.extend(res)
+                elif isinstance(first_item, ModelInfo):
+                    all_models.extend(res)
+                elif isinstance(first_item, CodeRepoInfo):
+                    all_repos.extend(res)
+                elif isinstance(first_item, PapersWithCodeResult):
+                    all_pwc.extend(res)
+            except Exception as e:
+                print(f"[Parallel Collect Error] {e}")
 
     # PwC 코드 매칭 정보로 has_code 및 importance_score 보강
     pwc_titles = {pwc.paper_title.lower().strip() for pwc in all_pwc if pwc.repositories}

@@ -22,8 +22,11 @@ from rag_module import build_vectorstore_from_collected_data, search_vectorstore
 
 class AgentState(TypedDict):
     """멀티 에이전트 파이프라인 상태"""
-    # 입력
+    # 입력 및 UI 옵션
     user_query: str
+    max_results: int
+    use_internal_db: bool
+    use_semantic_scholar: bool
 
     # Analyzer 출력
     analysis: AnalysisResult | None
@@ -36,6 +39,9 @@ class AgentState(TypedDict):
 
     # Summary 출력
     final_report: FinalReport | None
+
+    # 수집 경고 메시지 목록
+    warnings: list[str]
 
     # 진행 상태 로그
     status_log: list[str]
@@ -62,13 +68,16 @@ def route_decision(state: AgentState) -> str:
     if analysis is None:
         return "collect_external"
 
+    allow_internal = state.get("use_internal_db", True) and analysis.use_internal_db
+    allow_external = analysis.use_external_apis
+
     # 외부 API와 내부 DB 모두 사용할 필요가 없는 일상질문/기초개념인 경우
-    if not analysis.use_external_apis and not analysis.use_internal_db:
+    if not allow_external and not allow_internal:
         return "direct_answer"
 
-    if analysis.use_external_apis and analysis.use_internal_db:
+    if allow_external and allow_internal:
         return "collect_both"
-    elif analysis.use_external_apis:
+    elif allow_external:
         return "collect_external"
     else:
         return "search_internal"
@@ -97,11 +106,20 @@ def collect_external_node(state: AgentState) -> dict:
     """[Data Collector] 외부 API에서 데이터를 수집합니다."""
     analysis = state["analysis"]
     queries = analysis.search_queries if analysis.search_queries else [analysis.original_query]
+    max_results = state.get("max_results", 30)
+    use_semantic_scholar = state.get("use_semantic_scholar", False)
 
     log = state.get("status_log", [])
     log.append(f"🌐 외부 API 검색 시작 — 쿼리: {queries}")
 
-    collected = collect_all(queries, max_per_source=30, intent=analysis.intent)
+    collected = collect_all(
+        queries,
+        max_per_source=max_results,
+        intent=analysis.intent,
+        use_semantic_scholar=use_semantic_scholar,
+    )
+
+    warnings = collected.get("warnings", [])
 
     log.append(
         f"📦 수집 완료 — 논문: {len(collected['papers'])}건, "
@@ -117,19 +135,28 @@ def collect_external_node(state: AgentState) -> dict:
         pwc_results=collected["pwc_results"],
     )
 
-    return {"search_result": search_result, "status_log": log}
+    return {"search_result": search_result, "warnings": warnings, "status_log": log}
 
 
 def collect_both_node(state: AgentState) -> dict:
     """[Data Collector + Retriever] 외부 API 수집 + 내부 DB 검색을 함께 수행합니다."""
     analysis = state["analysis"]
     queries = analysis.search_queries if analysis.search_queries else [analysis.original_query]
+    max_results = state.get("max_results", 30)
+    use_semantic_scholar = state.get("use_semantic_scholar", False)
 
     log = state.get("status_log", [])
     log.append(f"🔄 외부 API + 내부 DB 동시 검색 시작")
 
     # 1) 외부 API 수집
-    collected = collect_all(queries, max_per_source=30, intent=analysis.intent)
+    collected = collect_all(
+        queries,
+        max_per_source=max_results,
+        intent=analysis.intent,
+        use_semantic_scholar=use_semantic_scholar,
+    )
+
+    warnings = collected.get("warnings", [])
 
     # 2) 수집 데이터를 임시 Vector DB에 저장 & 검색
     vectorstore = build_vectorstore_from_collected_data(
@@ -163,7 +190,7 @@ def collect_both_node(state: AgentState) -> dict:
         internal_docs=internal_docs,
     )
 
-    return {"search_result": search_result, "status_log": log}
+    return {"search_result": search_result, "warnings": warnings, "status_log": log}
 
 
 def search_internal_node(state: AgentState) -> dict:
@@ -207,11 +234,13 @@ def summarize_node(state: AgentState) -> dict:
     """[Summary Agent] 최종 리포트를 생성합니다."""
     log = state.get("status_log", [])
     log.append("📝 리포트 생성 중...")
+    use_semantic_scholar = state.get("use_semantic_scholar", False)
 
     report = run_summary_agent(
         state["user_query"],
         state["judged_result"],
         state["analysis"],
+        use_semantic_scholar=use_semantic_scholar,
     )
 
     log.append("✅ 리포트 생성 완료")
@@ -262,11 +291,19 @@ def build_workflow() -> StateGraph:
     return workflow
 
 
-def run_orchestrator(user_query: str) -> AgentState:
+def run_orchestrator(
+    user_query: str,
+    max_results: int = 30,
+    use_internal_db: bool = True,
+    use_semantic_scholar: bool = False,
+) -> AgentState:
     """전체 오케스트레이터를 실행합니다.
 
     Args:
         user_query: 사용자 자연어 질의
+        max_results: 소스당 최대 수집 건수
+        use_internal_db: 내부 DB 사용 여부
+        use_semantic_scholar: Semantic Scholar 사용 여부
 
     Returns:
         최종 AgentState (모든 단계의 결과 포함)
@@ -276,10 +313,14 @@ def run_orchestrator(user_query: str) -> AgentState:
 
     initial_state: AgentState = {
         "user_query": user_query,
+        "max_results": max_results,
+        "use_internal_db": use_internal_db,
+        "use_semantic_scholar": use_semantic_scholar,
         "analysis": None,
         "search_result": None,
         "judged_result": None,
         "final_report": None,
+        "warnings": [],
         "status_log": ["🚀 오케스트레이터 시작"],
     }
 

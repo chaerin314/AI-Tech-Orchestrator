@@ -20,6 +20,8 @@ from langchain_core.language_models import BaseLanguageModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from huggingface_hub import InferenceClient
 
+from llm_client import qwen_chat
+
 # .env 파일에 저장된 API 키 로드
 load_dotenv()
 
@@ -37,17 +39,12 @@ embeddings = HuggingFaceEmbeddings(
 
 
 def _qwen_invoke(prompt_text: str, max_tokens: int = 1500) -> str:
-    """Qwen3-8B HF Inference API 직접 호출 헬퍼"""
-    token = os.getenv("HF_TOKEN")
-    client = InferenceClient(model="Qwen/Qwen3-8B", token=token)
-    resp = client.chat_completion(
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant. Answer in Korean."},
-            {"role": "user", "content": prompt_text + "\n/no_think"},
-        ],
+    """Qwen3-8B 공용 클라이언트 호출 헬퍼"""
+    return qwen_chat(
+        system="You are a helpful assistant. Answer in Korean.",
+        user=prompt_text,
         max_tokens=max_tokens,
     )
-    return (resp.choices[0].message.content or "").strip()
 
 
 # ──────────────────────────────────────────────

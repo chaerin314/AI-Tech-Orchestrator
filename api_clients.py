@@ -301,41 +301,51 @@ def search_github(query: str, max_results: int = 30, intent: str = "general") ->
 
     # 의도별 쿼리 보강
     if intent == "implementation":
-        # 구현 중심: Python + 최소 스타 필터
         q = f"{query} language:Python stars:>50"
     elif intent == "trend":
-        # 최신 트렌드: 최근 업데이트 우선
         q = f"{query} language:Python pushed:>2023-01-01"
     else:
         q = f"{query} language:Python"
 
-    params = {
-        "q": q,
-        "sort": "stars",
-        "order": "desc",
-        "per_page": min(max_results, 100),
-    }
-    resp = _request_with_retry("GET", GITHUB_API_URL, headers=headers, params=params)
-    if resp is None:
-        return []
+    def _fetch_and_parse(search_q: str) -> list[CodeRepoInfo]:
+        params = {
+            "q": search_q,
+            "sort": "stars",
+            "order": "desc",
+            "per_page": min(max_results, 100),
+        }
+        resp = _request_with_retry("GET", GITHUB_API_URL, headers=headers, params=params)
+        if resp is None or resp.status_code != 200:
+            return []
+        parsed = []
+        try:
+            data = resp.json()
+            for item in data.get("items", [])[:max_results]:
+                parsed.append(CodeRepoInfo(
+                    name=item.get("name", ""),
+                    full_name=item.get("full_name", ""),
+                    description=(item.get("description") or "")[:300],
+                    url=item.get("html_url", ""),
+                    stars=item.get("stargazers_count", 0),
+                    forks=item.get("forks_count", 0),
+                    language=item.get("language") or "",
+                    topics=item.get("topics", []),
+                    updated_at=(item.get("updated_at") or "")[:10],
+                ))
+        except Exception as e:
+            print(f"[GitHub Parse Error] {e}")
+        return parsed
 
-    repos: list[CodeRepoInfo] = []
-    try:
-        data = resp.json()
-        for item in data.get("items", [])[:max_results]:
-            repos.append(CodeRepoInfo(
-                name=item.get("name", ""),
-                full_name=item.get("full_name", ""),
-                description=(item.get("description") or "")[:300],
-                url=item.get("html_url", ""),
-                stars=item.get("stargazers_count", 0),
-                forks=item.get("forks_count", 0),
-                language=item.get("language") or "",
-                topics=item.get("topics", []),
-                updated_at=(item.get("updated_at") or "")[:10],
-            ))
-    except Exception as e:
-        print(f"[GitHub Parse Error] {e}")
+    # 1차 시도 (조건 지정)
+    repos = _fetch_and_parse(q)
+
+    # 2차 폴백 (조건 완화: 스타/날짜 제약 제거)
+    if not repos and q != f"{query} language:Python":
+        repos = _fetch_and_parse(f"{query} language:Python")
+
+    # 3차 폴백 (단순 키워드 검색)
+    if not repos and q != query:
+        repos = _fetch_and_parse(query)
 
     return repos
 

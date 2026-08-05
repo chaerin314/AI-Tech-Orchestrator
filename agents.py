@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from dotenv import load_dotenv
 from llm_client import qwen_chat
@@ -43,6 +44,79 @@ def _clean_json_text(raw_output: str) -> str:
                 cleaned = part
                 break
     return cleaned
+
+
+COMMON_ML_TERMS = {
+    "dpo": "Direct Preference Optimization",
+    "ppo": "Proximal Policy Optimization",
+    "rlhf": "RLHF",
+    "rag": "Retrieval Augmented Generation",
+    "vlm": "Vision Language Model",
+    "dit": "Diffusion Transformer",
+    "lora": "LoRA",
+    "llama": "Llama",
+    "qwen": "Qwen",
+    "langgraph": "LangGraph",
+    "mcp": "Model Context Protocol",
+    "faiss": "FAISS",
+    "chroma": "Chroma",
+    "qdrant": "Qdrant",
+    "dense": "Dense Retrieval",
+    "sparse": "Sparse Retrieval",
+    "knowledge editing": "Knowledge Editing",
+    "model editing": "Model Editing",
+}
+
+
+def _extract_english_search_queries(user_query: str) -> list[str]:
+    """한글 질의에서 도메인 특화 영문 키워드 및 단어를 자동 추출합니다."""
+    queries = []
+    q_lower = user_query.lower()
+
+    for key, val in COMMON_ML_TERMS.items():
+        if key in q_lower and val not in queries:
+            queries.append(val)
+
+    eng_words = re.findall(r'[A-Za-z0-9\-]{2,}', user_query)
+    for w in eng_words:
+        if len(w) >= 3 and w not in queries and w.lower() not in [q.lower() for q in queries]:
+            queries.append(w)
+
+    return queries if queries else [user_query]
+
+
+def inject_missing_citation_links(report_text: str, judged: JudgedResult) -> str:
+    """리포트에 언급된 모든 논문/모델/코드 소스에 유효한 마크다운 클릭 가능 링크([Title](URL))를 자동 보완합니다."""
+    if not report_text:
+        return report_text
+
+    link_entries = []
+
+    if judged:
+        for p in judged.papers:
+            if p.paper_url:
+                link_entries.append((p.title, p.paper_url, f"📄 **[논문] {p.title}**: {p.paper_url}"))
+        for m in judged.models:
+            if m.url:
+                link_entries.append((m.model_id, m.url, f"🤖 **[모델] {m.model_id}**: {m.url}"))
+        for r in judged.code_repos:
+            if r.url:
+                name = r.full_name or r.name
+                link_entries.append((name, r.url, f"💻 **[코드] {name}**: {r.url}"))
+
+    modified_report = report_text
+
+    # 리포트 하단에 참고 출처 링크 섹션 보완
+    if link_entries and "### 🔗 주요 탐색 소스 출처 링크" not in modified_report and "### 🔗 참고 리소스" not in modified_report:
+        links_section = "\n\n---\n\n### 🔗 주요 탐색 소스 출처 링크\n"
+        seen_urls = set()
+        for _, url, fmt_link in link_entries:
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                links_section += f"- {fmt_link}\n"
+        modified_report += links_section
+
+    return modified_report
 
 
 # ──────────────────────────────────────────────
@@ -137,21 +211,29 @@ def run_analyzer_agent(user_query: str) -> AnalysisResult:
 
     try:
         parsed = json.loads(cleaned)
+        queries = parsed.get("search_queries", [])
+
+        # 한국어 쿼리가 수집 API로 전달되거나 쿼리가 비어있는 경우 스마트 영문 키워드 추출 적용
+        has_korean = any(ord('가') <= ord(char) <= ord('힣') for q in queries for char in q)
+        if not queries or has_korean:
+            queries = _extract_english_search_queries(user_query)
+
         return AnalysisResult(
             original_query=user_query,
-            keywords=parsed.get("keywords", []),
-            search_queries=parsed.get("search_queries", []),
+            keywords=parsed.get("keywords", []) or _extract_english_search_queries(user_query),
+            search_queries=queries,
             intent=parsed.get("intent", "general"),
             time_filter=parsed.get("time_filter", "recent"),
             use_internal_db=parsed.get("use_internal_db", True),
             use_external_apis=parsed.get("use_external_apis", True),
         )
     except (json.JSONDecodeError, KeyError) as e:
-        print(f"[Analyzer] JSON 파싱 실패, 기본 분석 사용: {e}\n원본: {raw_output[:200]}")
+        print(f"[Analyzer] JSON 파싱 실패, 스마트 기본 분석 사용: {e}\n원본: {raw_output[:200]}")
+        extracted = _extract_english_search_queries(user_query)
         return AnalysisResult(
             original_query=user_query,
-            keywords=user_query.split()[:5],
-            search_queries=[user_query],
+            keywords=extracted,
+            search_queries=extracted,
             intent="general",
             time_filter="recent",
             use_internal_db=True,
@@ -361,6 +443,30 @@ Write a comprehensive Korean technical report based on the above data."""
 
     system_prompt = get_summary_system_prompt(analysis.intent, use_semantic_scholar)
     report_text = _chat(system=system_prompt, user=user_msg, max_tokens=3000)
+
+    # LLM 폴백 응답 수신 시 데이터 기반 리포트 구문 자동 작성
+    if not report_text or report_text.startswith('{"keywords":'):
+        report_text = f"## 🔬 '{user_query}' 관련 핵심 기술 분석 리포트\n\n사용자 질의에 대해 수집·검증된 주요 오픈소스 기술 자원 결과입니다.\n\n"
+        if judged_result.papers:
+            report_text += "### 📄 관련 주요 논문\n"
+            for p in judged_result.papers[:5]:
+                url_str = f"({p.paper_url})" if p.paper_url else ""
+                report_text += f"- **[{p.title}]{url_str}** ({p.published})\n  - 초록: {p.abstract[:200]}...\n\n"
+        if judged_result.code_repos:
+            report_text += "### 💻 추천 오픈소스 구현 코드\n"
+            for r in judged_result.code_repos[:5]:
+                name = r.full_name or r.name
+                url_str = f"({r.url})" if r.url else ""
+                report_text += f"- **[{name}]{url_str}** (★ {r.stars:,})\n  - 설명: {r.description[:200]}\n\n"
+        if judged_result.models:
+            report_text += "### 🤖 관련 AI 모델\n"
+            for m in judged_result.models[:5]:
+                url_str = f"({m.url})" if m.url else ""
+                report_text += f"- **[{m.model_id}]{url_str}** (Downloads: {m.downloads:,})\n\n"
+
+    # 출처 링크 자동 보완
+    report_text = inject_missing_citation_links(report_text, judged_result)
+
     return FinalReport(full_report=report_text)
 
 

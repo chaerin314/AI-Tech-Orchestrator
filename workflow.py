@@ -28,6 +28,11 @@ class AgentState(TypedDict):
     use_internal_db: bool
     use_semantic_scholar: bool
 
+    # PDF 첨부 관련 메타데이터
+    pdf_path: str | None
+    pdf_context: str | None
+    pdf_docs: list[Any] | None
+
     # Analyzer 출력
     analysis: AnalysisResult | None
 
@@ -52,12 +57,14 @@ class AgentState(TypedDict):
 # ──────────────────────────────────────────────
 
 def analyze_node(state: AgentState) -> dict:
-    """[Analyzer Agent] 사용자 질의를 분석합니다."""
+    """[Analyzer Agent] 사용자 질의와 첨부된 PDF(존재 시) 맥락을 함께 분석합니다."""
     user_query = state["user_query"]
-    analysis = run_analyzer_agent(user_query)
+    pdf_context = state.get("pdf_context")
+    analysis = run_analyzer_agent(user_query, pdf_context=pdf_context)
 
     log = state.get("status_log", [])
-    log.append(f"✅ 질의 분석 완료 — 키워드: {', '.join(analysis.keywords)} | 의도: {analysis.intent}")
+    pdf_tag = " (📄 PDF 맥락 포함)" if pdf_context else ""
+    log.append(f"✅ 질의 분석 완료{pdf_tag} — 키워드: {', '.join(analysis.keywords)} | 의도: {analysis.intent}")
 
     return {"analysis": analysis, "status_log": log}
 
@@ -158,15 +165,16 @@ def collect_both_node(state: AgentState) -> dict:
 
     warnings = collected.get("warnings", [])
 
-    # 2) 수집 데이터를 임시 Vector DB에 저장 & 검색
+    # 2) 수집 데이터 및 PDF 청크를 통합 Vector DB에 저장 & 검색
     vectorstore = build_vectorstore_from_collected_data(
         papers=collected["papers"],
         models=collected["models"],
         code_repos=collected["code_repos"],
+        pdf_docs=state.get("pdf_docs"),
         persist=True,
     )
 
-    # 3) 내부 Vector DB 검색 (기존 저장 데이터 + 새로 수집한 데이터)
+    # 3) 내부 Vector DB 검색 (기존 저장 데이터 + 새로 수집한 데이터 + PDF 청크)
     internal_docs = []
     if vectorstore:
         internal_docs = search_vectorstore(
@@ -179,7 +187,7 @@ def collect_both_node(state: AgentState) -> dict:
         f"📦 수집 완료 — 논문: {len(collected['papers'])}건, "
         f"모델: {len(collected['models'])}건, "
         f"코드: {len(collected['code_repos'])}건, "
-        f"내부 검색: {len(internal_docs)}건"
+        f"내부/PDF 검색: {len(internal_docs)}건"
     )
 
     search_result = SearchResult(
@@ -194,18 +202,22 @@ def collect_both_node(state: AgentState) -> dict:
 
 
 def search_internal_node(state: AgentState) -> dict:
-    """[Retriever] 내부 Vector DB에서만 검색합니다."""
+    """[Retriever] 내부 Vector DB 및 첨부 PDF에서만 검색합니다."""
     analysis = state["analysis"]
     log = state.get("status_log", [])
-    log.append("📚 내부 Vector DB 검색 중...")
+    log.append("📚 Vector DB / PDF 검색 중...")
 
-    internal_docs = search_vectorstore(
-        analysis.original_query,
-        load_from_disk=True,
-        k=50,
-    )
+    # PDF가 있는 경우 FAISS 벡터스토어 빌드 후 검색
+    vectorstore = None
+    if state.get("pdf_docs"):
+        vectorstore = build_vectorstore_from_collected_data(pdf_docs=state.get("pdf_docs"))
 
-    log.append(f"📚 내부 검색 완료 — {len(internal_docs)}건")
+    if vectorstore:
+        internal_docs = search_vectorstore(analysis.original_query, vectorstore=vectorstore, k=50)
+    else:
+        internal_docs = search_vectorstore(analysis.original_query, load_from_disk=True, k=50)
+
+    log.append(f"📚 검색 완료 — {len(internal_docs)}건")
 
     search_result = SearchResult(internal_docs=internal_docs)
     return {"search_result": search_result, "status_log": log}
@@ -240,6 +252,7 @@ def summarize_node(state: AgentState) -> dict:
         state["user_query"],
         state["judged_result"],
         state["analysis"],
+        pdf_context=state.get("pdf_context"),
         use_semantic_scholar=use_semantic_scholar,
     )
 

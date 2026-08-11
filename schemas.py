@@ -105,6 +105,10 @@ class AnalysisResult(BaseModel):
         default=True,
         description="외부 API 호출 사용 여부"
     )
+    pdf_context: Optional[str] = Field(
+        default=None,
+        description="첨부된 PDF 논문 발췌 및 맥락 텍스트"
+    )
 
 
 class SearchResult(BaseModel):

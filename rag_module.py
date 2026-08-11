@@ -144,24 +144,53 @@ def _convert_to_documents(
     return documents
 
 
+def extract_pdf_info(pdf_path: str) -> tuple[str, list[Document]]:
+    """PDF 파일에서 전체 맥락 텍스트와 분할 청크 Document 목록을 추출합니다."""
+    if not pdf_path or not os.path.exists(pdf_path):
+        return "", []
+
+    try:
+        loader = PyMuPDFLoader(pdf_path)
+        docs = loader.load()
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=400,
+            chunk_overlap=100,
+            length_function=len,
+            separators=["\n\n", "\n", " ", ""]
+        )
+        split_docs = text_splitter.split_documents(docs)
+
+        # PDF 전반부 텍스트 추출 (최대 1500자)
+        full_text = "\n\n".join(doc.page_content for doc in docs[:5])[:1500]
+        return full_text, split_docs
+    except Exception as e:
+        print(f"[PDF Extraction Error] {e}")
+        return "", []
+
+
 def build_vectorstore_from_collected_data(
     papers: list = None,
     models: list = None,
     code_repos: list = None,
+    pdf_docs: list[Document] = None,
     persist: bool = False,
 ) -> FAISS | None:
-    """수집된 외부 데이터를 FAISS Vector DB에 저장합니다.
+    """수집된 외부 데이터 및 업로드된 PDF 청크를 FAISS Vector DB에 저장합니다.
 
     Args:
         papers: PaperInfo 리스트
         models: ModelInfo 리스트
         code_repos: CodeRepoInfo 리스트
+        pdf_docs: 업로드된 PDF의 LangChain Document 청크 리스트
         persist: True면 로컬 디스크에 저장
 
     Returns:
         FAISS vectorstore 또는 None (문서 없을 때)
     """
     documents = _convert_to_documents(papers, models, code_repos)
+    if pdf_docs:
+        documents.extend(pdf_docs)
+
     if not documents:
         return None
 

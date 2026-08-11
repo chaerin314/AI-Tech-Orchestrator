@@ -199,11 +199,15 @@ Output: {"keywords":[],"search_queries":[],"intent":"general","time_filter":"all
 Output ONLY the JSON object."""
 
 
-def run_analyzer_agent(user_query: str) -> AnalysisResult:
-    """사용자 질의를 분석하여 구조화된 검색 정보를 추출합니다."""
+def run_analyzer_agent(user_query: str, pdf_context: str | None = None) -> AnalysisResult:
+    """사용자 질의와 첨부된 PDF(존재 시) 맥락을 분석하여 구조화된 검색 정보를 추출합니다."""
+    user_prompt = f"User question: {user_query}"
+    if pdf_context:
+        user_prompt += f"\n\n=== Attached PDF Paper Excerpt ===\n{pdf_context[:1200]}"
+
     raw_output = _chat(
         system=ANALYZER_SYSTEM_PROMPT,
-        user=f"User question: {user_query}",
+        user=user_prompt,
         max_tokens=512,
     )
 
@@ -214,30 +218,34 @@ def run_analyzer_agent(user_query: str) -> AnalysisResult:
         queries = parsed.get("search_queries", [])
 
         # 한국어 쿼리가 수집 API로 전달되거나 쿼리가 비어있는 경우 스마트 영문 키워드 추출 적용
+        combined_q = f"{user_query} {pdf_context[:200]}" if pdf_context else user_query
         has_korean = any(ord('가') <= ord(char) <= ord('힣') for q in queries for char in q)
         if not queries or has_korean:
-            queries = _extract_english_search_queries(user_query)
+            queries = _extract_english_search_queries(combined_q)
 
         return AnalysisResult(
             original_query=user_query,
-            keywords=parsed.get("keywords", []) or _extract_english_search_queries(user_query),
+            keywords=parsed.get("keywords", []) or _extract_english_search_queries(combined_q),
             search_queries=queries,
-            intent=parsed.get("intent", "general"),
+            intent=parsed.get("intent", "comparison" if pdf_context else "general"),
             time_filter=parsed.get("time_filter", "recent"),
             use_internal_db=parsed.get("use_internal_db", True),
             use_external_apis=parsed.get("use_external_apis", True),
+            pdf_context=pdf_context,
         )
     except (json.JSONDecodeError, KeyError) as e:
         print(f"[Analyzer] JSON 파싱 실패, 스마트 기본 분석 사용: {e}\n원본: {raw_output[:200]}")
-        extracted = _extract_english_search_queries(user_query)
+        combined_q = f"{user_query} {pdf_context[:200]}" if pdf_context else user_query
+        extracted = _extract_english_search_queries(combined_q)
         return AnalysisResult(
             original_query=user_query,
             keywords=extracted,
             search_queries=extracted,
-            intent="general",
+            intent="comparison" if pdf_context else "general",
             time_filter="recent",
             use_internal_db=True,
             use_external_apis=True,
+            pdf_context=pdf_context,
         )
 
 
@@ -389,9 +397,10 @@ def run_summary_agent(
     user_query: str,
     judged_result: JudgedResult,
     analysis: AnalysisResult,
+    pdf_context: str | None = None,
     use_semantic_scholar: bool = False,
 ) -> FinalReport:
-    """검증된 결과를 기반으로 통합 리포트를 생성합니다."""
+    """검증된 결과 및 첨부 PDF(존재 시)를 기반으로 통합 비교 리포트를 생성합니다."""
 
     papers_detail = "\n".join(
         f"- Title: {p.title}\n  Authors: {', '.join(p.authors[:3])}\n  Importance Score: {p.importance_score} (Citations: {p.citation_count})\n  Top Venue: {p.is_top_venue} ({p.journal_ref or p.comment or p.venue or 'N/A'})\n  Code Included: {p.has_code}\n  Abstract: {p.abstract[:300]}\n  Date: {p.published}\n  URL: {p.paper_url}"
@@ -417,10 +426,12 @@ def run_summary_agent(
         f"- {doc[:200]}" for doc in judged_result.internal_docs
     ) or "No internal documents."
 
+    pdf_section = f"\n=== Attached Custom PDF Paper Excerpt ===\n{pdf_context[:1800]}\n" if pdf_context else ""
+
     user_msg = f"""User question: {user_query}
 Intent: {analysis.intent}
 Keywords: {', '.join(analysis.keywords)}
-
+{pdf_section}
 === Verified Papers ===
 {papers_detail}
 
@@ -440,6 +451,9 @@ Keywords: {', '.join(analysis.keywords)}
 {judged_result.quality_notes}
 
 Write a comprehensive Korean technical report based on the above data."""
+
+    if pdf_context:
+        user_msg += "\n\nCRITICAL INSTRUCTION: The user has attached a custom PDF paper. Explicitly compare the attached PDF paper's methods, features, and capabilities against the verified external papers, Hugging Face models, and GitHub repositories!"
 
     system_prompt = get_summary_system_prompt(analysis.intent, use_semantic_scholar)
     report_text = _chat(system=system_prompt, user=user_msg, max_tokens=3000)
